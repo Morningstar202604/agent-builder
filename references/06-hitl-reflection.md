@@ -1,4 +1,4 @@
-# 06 - 人在回路 (HITL) + 自我反思 (Reflection)
+# 06 — 人在回路 (HITL) + 自我反思 (Reflection)
 
 > **Layer 2：协作智能** — Agent 自主性越高，闯祸的风险越大。本 reference 覆盖两套安全机制：Human-in-the-Loop（HITL）审批系统——在 Agent 执行敏感操作前等人类确认；Self-Reflection（自我反思）闭环——让 Agent 自己审查输出质量、发现错误、修正后再输出。
 

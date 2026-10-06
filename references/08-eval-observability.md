@@ -1,4 +1,4 @@
-# Eval 框架 + 可观测性 · LLM-as-Judge · OpenTelemetry · Token 追踪
+# 08 — Eval 框架 + 可观测性 · LLM-as-Judge · OpenTelemetry · Token 追踪
 
 > 目标：Agent 没有评估就没有改进——三类评估、LLM-as-Judge 投票、回归检测，前端仪表板可视化。同时让 Agent 的每一次推理、每一个 token 消耗、每一秒延迟都可追踪。
 

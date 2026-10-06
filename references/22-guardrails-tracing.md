@@ -1,4 +1,4 @@
-# 护栏与追踪 · Guardrails 生命周期 · OpenTelemetry 全链路可观测性
+# 22 — 护栏与追踪 · Guardrails 生命周期 · OpenTelemetry 全链路可观测性
 
 > **⚠️ 不要重造以下东西：**
 > - Guardrails → 用 **OpenAI Agents SDK**（`InputGuardrail` + `OutputGuardrail` + `Runner hooks`），不要手写正则/敏感词

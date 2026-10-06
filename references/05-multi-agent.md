@@ -1,4 +1,4 @@
-# 05 - 多 Agent 协作 + RAG 检索增强
+# 05 — 多 Agent 协作 + RAG 检索增强
 
 > **Layer 2：协作智能** — 单个 Agent 的能力有天花板。复杂任务需要多个 Agent 各司其职，由一个编排器协调。与此同时，Agent 需要基于私有知识库做出精准回答，而不是靠 LLM 的通用知识来猜测。本 reference 覆盖 Supervisor-Worker 多 Agent 编排的完整实现，以及 RAG（检索增强生成）管道从文档摄入到语义检索的全链路。
 

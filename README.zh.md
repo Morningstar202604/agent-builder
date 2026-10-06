@@ -21,7 +21,7 @@
 | 基础 | Turborepo · ReAct 循环 · SSE 流式 · Next.js · Electron 桌面端 |
 | 工具与技能 | Token 预算 · ToolRegistry · MCP Client · Skills 加载 |
 | 记忆与 RAG | 三层记忆（短期/长期/情景）· 混合检索 · Qdrant/Milvus/Chroma |
-| 多 Agent | Supervisor+Worker · LangLang 集成 · 框架对比（LangGraph/CrewAI/AutoGen） |
+| 多 Agent | Supervisor+Worker · LangGraph 集成 · 框架对比（LangGraph/CrewAI/AutoGen） |
 | 安全 | Prompt Injection 防御 · Guardrails 校验 · 工具风险分类 |
 | 生产部署 | Docker + K8s · CI/CD · OpenTelemetry · Webhook · Playground UI |
 

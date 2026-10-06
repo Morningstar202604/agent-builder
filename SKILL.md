@@ -268,7 +268,7 @@ User wants to build from scratch / create new agent project?
 │   ├── L2 HITL/reflection → references/06-hitl-reflection.md
 │   ├── L3 security → references/07-security.md
 │   ├── L3 eval/observability → references/08-eval-observability.md
-│   ├── L3 deploy → references/09-deploy.json
+│   ├── L3 deploy → references/09-deploy.md
 │   ├── L4 vector db / embedding / rerank → references/12-vector-db-practical.md
 │   ├── L4 structured output / JSON mode → references/13-structured-output.md
 │   ├── L4 MCP server development → references/14-mcp-server-dev.md

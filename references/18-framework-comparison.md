@@ -1,4 +1,4 @@
-# 18 框架集成与对比 · LangGraph · CrewAI · AutoGen · CAMEL · MetaGPT
+# 18 — 框架集成与对比 · LangGraph · CrewAI · AutoGen · CAMEL · MetaGPT
 
 > 目标：五个主流 Agent 框架各有长短。不要"为了用框架而用框架"，而是根据场景选择最合适的，并以本项目 AbstractAgent 为核心实现"本项目为主、框架为辅"的混用架构。
 

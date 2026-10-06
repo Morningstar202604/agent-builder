@@ -1,4 +1,4 @@
-# 20 Agent 市场 · Skill/Tool/Prompt 生态
+# 20 — Agent 市场 · Skill/Tool/Prompt 生态
 
 > 目标：Agent 生态繁荣的关键是"让别人能贡献"。Marketplace 让开发者上传 Skill、用户发现 Skill、平台从交易中抽成——三方正循环。
 

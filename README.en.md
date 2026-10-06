@@ -68,7 +68,7 @@ CatPaw will auto-load this Skill and read the relevant reference node on demand.
 | 05 | [multi-agent](references/05-multi-agent.md) | Supervisor+Worker + LangGraph integration |
 | 06 | [hitl-reflection](references/06-hitl-reflection.md) | 4-tier HITL + LLM-as-Judge self-reflection |
 | 07 | [security](references/07-security.md) | Prompt injection defense + Guardrails |
-| 08 | [eval-observability](references/08-eval-observability.md) | Eval framework + LangFuse full-chain tracing |
+| 08 | [eval-observability](references/08-eval-observability.md) | Eval framework + Langfuse full-chain tracing |
 | 09 | [deploy](references/09-deploy.md) | Docker Compose + Electron signing + K8s + CI/CD |
 | 10 | [prompt-protocol](references/10-prompt-protocol.md) | 5-layer Prompt + version management + A/B testing |
 | 11 | [function-calling](references/11-function-calling.md) | 3-provider adapter + parallel dispatch |

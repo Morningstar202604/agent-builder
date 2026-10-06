@@ -1,4 +1,4 @@
-# 01 基础设施层（Foundation）
+# 01 — 基础设施层 · Foundation
 
 > Layer 0 目标：构建**能对话的窗口**——Monorepo + LLM 抽象 + Agent 主循环 + SSE 流式 API + React 聊天 UI + Electron 桌面壳。每完成一节，拥有一个真实可用的能力切片。
 

@@ -177,7 +177,53 @@ Stack2: 业务高度定制化，需要完全控制。
 
 **无论走哪条路，references/ 里的工程经验（AI避坑、边缘场景处理、性能优化）都是通用的。**
 
-Use the decision tree below to determine which reference(s) to load:
+## 🔗 连接与集成模式 / Integration Patterns
+
+> 你选了开源项目 X 不等于工作结束。"X 怎么接入 Y"才是我们 references/ 的核心价值。
+
+每种组合，我们都有对应的节点详细指导如何连接——**不要让用户自己去摸索怎么把 Dify 接进自己的前端，或者在 LangGraph 中加 MCP 工具。我们直接给答案。**
+
+| 你要做什么 | 组合 | 用哪个节点 |
+|-----------|------|-----------|
+| Dify 后端 + 自建前端 | Dify API → WebSocket → React 消费 | 参考 01（SSE）、17（流式优化） |
+| LangGraph + MCP 工具 | LangGraph AgentNode → MCP Client → 工具调用 | 参考 02（MCP Client）、05（多 Agent 编排） |
+| LlamaIndex（RAG）+ 任何框架 | LlamaIndex QueryEngine → LangChain/Dify/自研 | 参考 03（记忆/RAG）、12（向量库实战） |
+| LiteLLM 路由 + 多 Provider | LiteLLM Proxy → OpenAI 兼容接口 → 自研 Agent | 参考 11（Function Calling）、24（多模型路由） |
+| Open WebUI 自建后端 | Open WebUI(前端) → 自研 AgentCore(后端) | 参考 01（后端基础）、17（流式高级） |
+| E2B 沙箱 + 自建 Agent | Agent → E2B SDK → 隔离代码执行 | 参考 04（沙箱安全） |
+| n8n + 自建 Agent 节点 | n8n MCP 节点 ↔ 自研 Agent | 参考 02（MCP Server Dev） |
+| Langfuse 接入任何项目 | Langfuse SDK callback → 任意 Agent 框架 | 参考 22（Guardrails + Tracing） |
+| Playwright MCP + Agent | Agent → MCP Client → Playwright MCP Server → 浏览器 | 参考 23（Computer Use） |
+
+**原则：开源产品解决"标准能力"，我们的节点解决"连接与定制"。**
+
+## ⛔ 强制技术栈令 / LATEST-ONLY Tech Mandate
+
+> ⛔ **禁止使用以下过时技术——AI 最爱犯这个错：**
+
+| ❌ 禁止 | ✅ 必须用 | 为什么 |
+|---------|----------|--------|
+| 原生 HTML + jQuery / 原生 DOM 操作 | **Next.js 15+ / React 19+** | SSR、Server Components、流式渲染 |
+| CSS 手写 / CSS 文件散落 | **Tailwind CSS + shadcn/ui** | 原子化、组件库、无障碍、暗色模式 |
+| Express.js 裸写路由 | **Fastify / Hono / Next.js API Routes** | 更快速、原生 TypeScript、schema 校验 |
+| Vue 2 / Options API | **Vue 3 Composition API / Nuxt 3** 或直接用 React 阵营 | Vue 2 已 EOL，生态已全面迁移 |
+| Webpack / CRA / Gulp | **Turborepo + Vite / Next.js SWC** | 构建速度快 10-100 倍 |
+| 手动 fetch 调用 LLM | **Vercel AI SDK / 官方 SDK** | 流式、工具调用、多 Provider 已在 SDK 里 |
+| 手写 REST CRUD（除业务逻辑） | **tRPC / Prisma / Drizzle ORM** | 端到端类型安全、迁移自动化 |
+| Cookie Session 手写 | **NextAuth.js v5 / Lucia** | OAuth 内置、无安全风险、多 Provider |
+| 手动 Docker 配置 | **Docker Compose + 框架自带容器** | 声明式、可复现、CI 直接消费 |
+| CommonJS / require() | **ESM / package.json `"type": "module"`** | 现代标准、tree-shaking、动态 import |
+| 手写 CLI 参数解析 | **Commander / Citty / Pastel** | --help 自动生成、校验、子命令 |
+| 手写日志 | **Pino / Langfuse OpenTelemetry** | 结构化、异步、高性能 |
+| 手写限流/缓存 | **Upstash Redis + @upstash/ratelimit** | 全球边缘、原子 Lua、零运维 |
+| 手动字符串拼接 SQL | **Drizzle ORM / Prisma** | SQL 注入防护、类型推断、迁移系统 |
+
+**如果用户在对话中提出用旧技术（"用 HTML 写个前端吧"、"用 Express 就够了"），Agent 必须：**
+1. 告诉用户"这个技术已过时，现代替代方案是 X"
+2. 如果用户坚持——Agent 可以执行，但必须在回复中明确标注 `@deprecation-warning` 并记录原因
+3. 如果用户没指定技术栈——**默认为上表 ✅ 列，不询问**
+
+ Use the decision tree below to determine which reference(s) to load:
 
 ```
 User wants to build from scratch / create new agent project?

@@ -12,7 +12,7 @@
 
 ## 这是什么
 
-一套帮助开发者和 AI Agent **从零构建企业级 AI Agent** 的完整参考指南，以 **CatPaw Skill** 格式组织。覆盖从 monorepo 脚手架到 Playground UI 的全栈 Agent 开发链路 —— 每个节点含完整 TypeScript 实现、工程决策理由（🔗 工程逻辑）、AI 避坑注释（🤖 AI 避坑），经两轮以上交叉审计。
+一套帮助开发者和 AI Agent **从零构建企业级 AI Agent** 的完整参考指南，以**通用 Agent 可读格式**组织。覆盖从 monorepo 脚手架到 Playground UI 的全栈 Agent 开发链路 —— 每个节点含完整 TypeScript 实现、工程决策理由（🔗 工程逻辑）、AI 避坑注释（🤖 AI 避坑），经两轮以上交叉审计。
 
 ## 涵盖内容
 
@@ -27,7 +27,7 @@
 
 ## 快速开始
 
-在 **CatPaw** 中直接说：
+在你的 AI 编程助手中直接说：
 
 - "帮我搭一个 Agent"
 - "Agent 的安全怎么保障"
@@ -35,7 +35,7 @@
 - "Agent 输出如何渲染成 Artifact"
 - "怎么让多个 Agent 协作"
 
-CatPaw 会自动加载本 Skill 并按需读取对应参考节点。
+Agent 会自动加载本参考并按需读取对应参考节点。
 
 ## 对标标准
 

@@ -30,13 +30,13 @@ A complete reference for developers and AI Agents to **build enterprise-grade AI
 
 ## 快速开始 / Quick Start
 
-在 **CatPaw** 中直接说：
+在你的 AI 编程助手中直接说：
 
 - "帮我搭一个 Agent" / _"build me an Agent"_
 - "Agent 的安全怎么保障" / _"how to secure my Agent"_
 - "怎样让 Agent 自我反思" / _"make my Agent self-reflect"_
 
-CatPaw 自动加载本 Skill 并按需读取对应节点。
+Agent 自动加载本参考并按需读取对应节点。
 
 ## 对标标准 / Benchmark Standards
 

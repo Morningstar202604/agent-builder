@@ -12,7 +12,7 @@
 
 ## What This Is
 
-A comprehensive reference guide for developers and AI Agents to **build enterprise-grade AI Agents from scratch**. Organized in **CatPaw Skill** format, covering the full-stack Agent development pipeline — from monorepo scaffolding to Playground UI. Every node includes production-grade TypeScript code, engineering rationale (🔗 Why this approach), and AI-pitfall annotations (🤖 AI pitfalls), cross-audited multiple times.
+A comprehensive reference guide for developers and AI Agents to **build enterprise-grade AI Agents from scratch**. Organized in a universal Agent-readable format, covering the full-stack Agent development pipeline — from monorepo scaffolding to Playground UI. Every node includes production-grade TypeScript code, engineering rationale (🔗 Why this approach), and AI-pitfall annotations (🤖 AI pitfalls), cross-audited multiple times.
 
 ## What's Inside
 
@@ -27,7 +27,7 @@ A comprehensive reference guide for developers and AI Agents to **build enterpri
 
 ## Quick Start
 
-In **CatPaw**, simply say:
+In your AI coding assistant, simply say:
 
 - "build me an Agent"
 - "how to secure my Agent"
@@ -35,7 +35,7 @@ In **CatPaw**, simply say:
 - "render Agent output as Artifacts"
 - "how to make multiple Agents collaborate"
 
-CatPaw will auto-load this Skill and read the relevant reference node on demand.
+The agent will auto-load these references and read the relevant node on demand.
 
 ## Benchmark Standards
 

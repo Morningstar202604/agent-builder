@@ -8,7 +8,7 @@
 
 ## 对标标准
 
-- **OpenAI Agents SDK** — Guardrels 三层校验 + Runner 架构 + Session 持久化 + Tracing 内建
+- **OpenAI Agents SDK** — Guardrails 三层校验 + Runner 架构 + Session 持久化 + Tracing 内建
 - **Anthropic Claude** — Artifacts 协议 + Computer Use + Harness 架构 + CLAUDE.md/Auto Memory/Skills/Hooks
 - **MCP (Model Context Protocol)** — 最新规范下的 Client + Server 双向开发
 - **Langfuse / OpenTelemetry** — 全链路可追踪、可度量、可告警
@@ -40,7 +40,7 @@ agent-builder/
 │   ├── 19-multi-tenancy.md       # 多租户（RLS/DB-per-tenant）+ RBAC + 审计日志
 │   ├── 20-agent-marketplace.md   # Agent 市场 + 发布流程 + 安全扫描 + 收益分成
 │   ├── 21-fault-recovery.md      # 状态快照（Redis/Postgres）+ 断线重连 + 幂等工具
-│   ├── 22-guardrails-tracing.md  # **OpenAI Guardrels 三层 + Session + Tracing + 成本追踪**
+│   ├── 22-guardrails-tracing.md  # **OpenAI Guardrails 三层 + Session + Tracing + 成本追踪**
 │   ├── 23-artifacts-computer-use.md # **Artifacts 协议 + Computer Use + Headless CLI + Harness**
 │   └── 24-product-layer.md       # **Playground + 多模型路由 + Webhook + CI/CD**
 └── assets/

@@ -10,7 +10,7 @@ A comprehensive reference guide for developers and AI Agents to build enterprise
 
 ## Benchmark Standards
 
-- **OpenAI Agents SDK** — Three-layer Guardrels + Runner architecture + Session persistence + Built-in Tracing
+- **OpenAI Agents SDK** — Three-layer Guardrails + Runner architecture + Session persistence + Built-in Tracing
 - **Anthropic Claude** — Artifacts protocol + Computer Use + Harness architecture + CLAUDE.md/Auto Memory/Skills/Hooks
 - **MCP (Model Context Protocol)** — Client + Server bidirectional development under the latest spec
 - **Langfuse / OpenTelemetry** — Full-chain observability, metering, and alerting
@@ -42,7 +42,7 @@ agent-builder/
 │   ├── 19-multi-tenancy.md       # Multi-tenancy (RLS/DB-per-tenant) + RBAC + audit logging
 │   ├── 20-agent-marketplace.md   # Agent marketplace + publishing + security scanning + revenue sharing
 │   ├── 21-fault-recovery.md      # State snapshots (Redis/Postgres) + reconnection + idempotent tools
-│   ├── 22-guardrails-tracing.md  # **OpenAI Guardrels 3-layer + Session + Tracing + cost tracking**
+│   ├── 22-guardrails-tracing.md  # **OpenAI Guardrails 3-layer + Session + Tracing + cost tracking**
 │   ├── 23-artifacts-computer-use.md # **Artifacts protocol + Computer Use + Headless CLI + Harness**
 │   └── 24-product-layer.md       # **Playground + multi-model routing + webhooks + CI/CD**
 └── assets/

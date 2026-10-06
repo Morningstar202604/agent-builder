@@ -2,6 +2,15 @@
 
 > 本 reference 覆盖 Agent 核心能力层的三个子系统：上下文窗口与 Token 预算管理（Token Estimation + Context Compression）、工具注册中心与 MCP 客户端（ToolRegistry + MCPClient）、Skill 系统——渐进披露与生命周期的完整实现。读完本文件即可独立落地上述三个子系统的全部后端+前端代码。
 
+> **⚠️ 不要重造以下东西：**
+> - MCP Client/Server → 用 **`@modelcontextprotocol/sdk`**（官方 TypeScript SDK, `Client` + `StdioTransport` + `SSETransport`），不要手写 JSON-RPC 2.0 帧解析
+> - Function Calling → 用 **OpenAI SDK 的 `tools` 参数** / **Anthropic SDK 的 `tools`**，不要手写 Schema 转换
+> - Token 计数 → 用 **`@anthropic-ai/tokenizer`** / **`tiktoken`** / **`gpt-tokenizer`**，不要自己估
+> - Context 压缩 → 用 **LangChain 的 `ConversationSummaryBufferMemory`**，不要手写滑动窗口
+> - 工具发现 → 用 **MCP Resources + Tools 标准目录协议**，不要手写服务发现
+>
+> 本 reference 的核心价值：标注了每个"自己写"的环节为何不能用现成库（比如 ToolRegistry 需要按业务做权限分层、Token Budget 需要对齐多 Provider 的 tokenizer 差异）。**先看"为什么不能直接用"的标注，再决定要不要自己写。**
+
 ---
 
 ## 目录

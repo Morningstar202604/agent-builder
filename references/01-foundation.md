@@ -2,6 +2,15 @@
 
 > Layer 0 目标：构建**能对话的窗口**——Monorepo + LLM 抽象 + Agent 主循环 + SSE 流式 API + React 聊天 UI + Electron 桌面壳。每完成一节，拥有一个真实可用的能力切片。
 
+> **⚠️ 不要重造以下东西：**
+> - SSE 流式 → 用 **Vercel AI SDK** (`streamText` / `streamUI`)，不要手写 EventSource 解析
+> - LLM 调用 → 用 **OpenAI SDK** / **Anthropic SDK** / **Vercel AI SDK**，不要手写 HTTP 请求
+> - 工具调用协议 → 用 **MCP (Model Context Protocol)** + `@modelcontextprotocol/sdk`，不要手写 JSON-RPC 帧
+> - ReAct 循环 → 用 **LangGraph** 的状态机模式，不要手写 while+switch
+> - 前端流式 UI → 用 **Vercel AI SDK React** (`useChat` / `useCompletion`)，不要手写 SSE 拼接
+>
+> 本 reference 给出的实现包含工程考量（错误恢复、边缘场景、生产级细节），但每个决策点都会标注"为什么不用 X 库"。**看注释先于看代码。**
+
 ---
 
 ## 目录

@@ -1,5 +1,14 @@
 # 23 — 产物渲染 · 计算机操控 · 无头模式 · 澄清提问 · Harness 架构
 
+> **⚠️ 不要重造以下东西：**
+> - Artifacts 渲染 → 用 **Claude Artifacts 协议**（`<antartifact>` MIME 标准），不要自创渲染格式
+> - Computer Use → 用 **MCP 协议** + **Playwright MCP Server**，不要手写 Screen→坐标→点击循环
+> - 浏览器自动化 → 用 **Playwright** / **Puppeteer**（`@playwright/mcp`），不要手写 CDP 协议
+> - CLI/Headless → 直接用 **OpenAI Agents SDK** 的 `Runner` + `--print --output-format json` 模式
+> - Hooks/Sub-agents → 用 **OpenAI Agents SDK** 的 `hooks` + `subagents`，不要手写中间件
+>
+> 本 reference 的价值：覆盖 Claude Code Harness（CLAUDE.md/Auto Memory/Skills/Hooks）的完整架构。**用 OpenAI Agents SDK 做 Harness 底座，不要自己发明 Hooks/Memory/Sub-agent 协议。**
+
 > 本 reference 覆盖现代 Agent 超越纯文本对话的四项能力——结构化产物（Artifacts）的创建与渲染、Computer Use 视觉操控、CLI/Headless 自动化执行、AskUserQuestion 澄清交互，以及 Claude Code Harness 的完整架构设计（CLAUDE.md / Auto Memory / Skills / Hooks / Sub-agents）。读完本文件可使 Agent 从"聊天机器人"升级为"全栈协作平台"。
 
 ---

@@ -2,6 +2,15 @@
 
 > **Layer 2：协作智能** — 单个 Agent 的能力有天花板。复杂任务需要多个 Agent 各司其职，由一个编排器协调。与此同时，Agent 需要基于私有知识库做出精准回答，而不是靠 LLM 的通用知识来猜测。本 reference 覆盖 Supervisor-Worker 多 Agent 编排的完整实现，以及 RAG（检索增强生成）管道从文档摄入到语义检索的全链路。
 
+> **⚠️ 不要重造以下东西：**
+> - 多 Agent 编排 → 用 **LangGraph**（`StateGraph` + `addEdge` + `addConditionalEdges`），不要手写 Supervisor 循环
+> - Agent 间通信 → 用 **MCP** + LangGraph 的 `Send()` API，不要手写消息队列
+> - RAG 管道 → 用 **LlamaIndex** / **Haystack**，不要手写 chunk→embed→retrieve→rerank
+> - 向量检索 → 用 **Qdrant / Milvus / Chroma 官方 SDK**，不要手写 ANN 逻辑
+> - Re-ranking → 用 **Cohere Rerank** / **Flashrank** / **bge-reranker**，不要手写排序
+>
+> **第一选择永远是接入，不是自研。** 本 reference 的参考实现仅在 LangGraph/LlamaIndex 等框架无法满足业务特定编排逻辑时作为 fallback 参考。
+
 ---
 
 ## 目录

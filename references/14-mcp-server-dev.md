@@ -1,5 +1,9 @@
 # 14 — MCP Server 开发：从"调用"到"开发"
 
+> **⚠️ 唯一指定工具：`@modelcontextprotocol/sdk`**
+> 这是 MCP 协议的官方 TypeScript SDK，由 Anthropic 维护。用它，不要手写 MCP 协议。
+> SDK 提供：`Server` / `Client` / `StdioServerTransport` / `SSEServerTransport` / `StreamableHTTPServerTransport` / `ResourceTemplate` — 你的工作就是填充 tools/resources/prompts，不需要处理 JSON-RPC 帧。
+
 > 本 reference 覆盖 MCP Server 的完整开发流程：架构设计、Stdio/SSE 双协议实现、Realtime Streaming、Resource 暴露、Prompt 模板、安全认证、调试面板。读完本文件即可独立构建一个生产级 MCP Server。
 
 ---

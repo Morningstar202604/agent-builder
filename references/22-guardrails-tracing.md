@@ -1,5 +1,13 @@
 # 护栏与追踪 · Guardrails 生命周期 · OpenTelemetry 全链路可观测性
 
+> **⚠️ 不要重造以下东西：**
+> - Guardrails → 用 **OpenAI Agents SDK**（`InputGuardrail` + `OutputGuardrail` + `Runner hooks`），不要手写正则/敏感词
+> - Tracing/Observability → 用 **OpenTelemetry SDK** + **Langfuse**，不要手写 Span 和 Trace
+> - Token 消耗统计 → 用 **Langfuse** callback handler，不要手写 counter
+> - Prompt 追踪 → 用 **Langfuse Trace** / **Helicone**，不要手写日志
+>
+> 本 reference 的价值：告诉你 Guardrails 的三层选用策略（必选输入护栏 vs 可选输出护栏 vs 工具护栏）以及如何自定义业务护栏逻辑。**不要从零写护栏系统，用 OpenAI Agents SDK + Langfuse 两者组合。**
+
 > 目标：Agent 不只是"能跑"——必须在每一次输入/输出/工具调用处都有安全护栏，每一次推理都有完整追踪数据。本章从 OpenAI Agents SDK 的 Guardrail 架构出发，构建 Input/Output/Tool 四层护栏体系，并集成 OpenTelemetry 实现生产级全链路可观测性。
 
 ---

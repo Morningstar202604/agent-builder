@@ -7,6 +7,35 @@ description: "Build a production-grade AI Agent product (web + Electron desktop)
 
 A router for building a complete AI Agent product. **Do not implement directly from SKILL.md** — read the appropriate reference file for the layer the user needs.
 
+## ⚠️ 最高优先级原则：不重复造轮子 / #1 Rule: Don't Reinvent the Wheel
+
+> AI 最爱犯的错：看到一个需求就开始手搓。**请抑制这个冲动。** 本 Skill 覆盖的每一层，业界几乎都有成熟方案。Agent 的工作是**选方案、接方案**，不是重造方案。
+
+**下面是各层"可以直接用"的清单，每层优先用这些，不要自己写：**
+
+| 需求 | 直接用 | 不要再写 |
+|------|--------|----------|
+| MCP 工具互联 | `@modelcontextprotocol/sdk` | JSON-RPC 帧解析、连接管理 |
+| Agent 编排/状态机 | LangGraph / LangChain Agents | 任务分发、状态快照、循环检测 |
+| 流式调用+工具调用 | Vercel AI SDK (`ai` + `ai/react`) | SSE 拼接、工具调用帧解析 |
+| Guardrails / 输入校验 | OpenAI Agents SDK Guardrails | 手写正则过滤、敏感词黑名单 |
+| Function Calling 适配 | LiteLLM / OpenAI SDK | Provider 格式转换、参数映射 |
+| RAG / 文档处理 | LlamaIndex / Haystack | 分块、Embedding 编排、索引更新 |
+| 向量数据库客户端 | Qdrant/Milvus/Chroma 官方 SDK | 连接池、查询封装 |
+| 可观测性 | Langfuse / OpenTelemetry SDK | Span 创建、Token 统计、Trace 导出 |
+| 结构化输出验证 | Zod / TypeBox | 手写 JSON Schema 校验 |
+| 多租户 RBAS | CASL / AccessControl | 权限模型手写 |
+| 沙箱/代码执行 | E2B / Daytona / Modal | Docker 沙箱手写 |
+| 多模型路由 | LiteLLM Proxy | Provider 切换、Fallback 逻辑 |
+| CI/CD | GitHub Actions / GitLab CI 标准模板 | pipeline 手写 |
+
+**仅在以下情况才自己写代码：**
+- 本 Skill 的 references/ 明确给出的参考实现（包含完整工程考量）
+- 业务特有的差异化逻辑（产品独特卖点相关）
+- 各层之间的胶水层（用成熟库，只写集成代码）
+
+首次加载任一 reference 前，**先检查上面的清单**：这一层是否已有成熟方案可以接入？如果有，直接接，不要重新发明。
+
 ## Intent Assessment
 
 Use the decision tree below to determine which reference(s) to load:

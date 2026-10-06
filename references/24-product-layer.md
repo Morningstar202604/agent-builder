@@ -1,5 +1,14 @@
 # 24 产品化层 · Playground · 多模型路由 · 限流 · CI/CD · Agent-as-a-Service
 
+> **⚠️ 不要重造以下东西：**
+> - 多模型路由 → 用 **LiteLLM**（`litellm.completions()` + 代理模式），不要手写 Provider 路由表
+> - Fallback 链 → 用 **LiteLLM** 的 `fallbacks` 配置，不要手写 retry+switch
+> - Rate Limiting → 用 **速率限制中间件**（`express-rate-limit` / `hono-rate-limiter` + Redis Lua），不要手写 token bucket
+> - CI/CD → 用 **GitHub Actions** 标准 workflow，不要手写 bash 部署
+> - Webhook 验证 → 用 **svix**（HMAC-SHA256 签名验证库），不要手写
+>
+> 本 reference 的价值：产品化层的业务逻辑（Playground UI 定制、用户配额治理）是差异化的，但基础设施（路由、限流、CI/CD）一定用现成方案。**LiteLLM 解决模型层的一切问题，不要再写 model adapter。**
+
 > 目标：把"能跑的 Agent 代码"变成"用户愿意每天用的产品"。本章覆盖五个产品化维度：Playground 交互界面、多模型智能路由、限流与配额治理、Webhook 事件系统、CI/CD 工程集成，以及 Agent-as-a-Service 的 REST/WebSocket API 架构。每一条都是"Demo 变产品"的必经之路。
 
 ---

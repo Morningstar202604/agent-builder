@@ -36,7 +36,146 @@ A router for building a complete AI Agent product. **Do not implement directly f
 
 首次加载任一 reference 前，**先检查上面的清单**：这一层是否已有成熟方案可以接入？如果有，直接接，不要重新发明。
 
-## Intent Assessment
+## 🧭 你的路径选择：自建 vs 复用开源项目
+
+> 你有两条路。不要一上来就默认"从头写"。
+
+### 路径 A：直接使用开源项目（推荐先评估）
+
+下面按"可以直接部署使用的完整产品"和"可以集成的框架库"分类。先看看有没有现成的能满足需求；如果满足，**直接用，不要重造**。
+
+#### A1. 可以直接部署的完整产品 / Full-Stack Deployable Products
+
+| 项目 | 定位 | 适合 | 不适合 | 许可证 |
+|------|------|------|--------|--------|
+| **[Dify](https://github.com/langgenius/dify)** | 低代码 AI Agent 工厂：可视化 Workflow + RAG + 多模型路由 + 插件生态 | 快速搭建企业 AI 应用、客服、数据分析 | 高度定制的前端交互、独特品牌体验 | Apache-2.0 |
+| **[Open WebUI](https://github.com/open-webui/open-webui)** | 类 ChatGPT 自托管前端：多模型管理 + RAG + RBAC | 内部 AI 助手、私有化对话终端 | 复杂工作流编排、多 Agent 场景 | MIT |
+| **[FastGPT](https://github.com/labring/FastGPT)** | 知识库问答专家：高精度文档检索 + 可视化流程 | 医疗/法律/军工等垂直领域知识库 | 通用多 Agent、前端深度定制 | Apache-2.0 |
+| **[RAGFlow](https://github.com/infiniflow/ragflow)** | 复杂文档解析 + 多引擎 RAG（OCR+表格识别+语义重排） | 大量 PDF/PPT/表格的智能问答 | 实时多模态、流式交互 | Apache-2.0 |
+| **[n8n](https://github.com/n8n-io/n8n)** | 工作流自动化引擎（含 AI Agent 节点） | 流程编排、系统集成（CRM/DB/API） | 做产品前端交互、C 端用户界面 | Fair-code |
+| **[Coze/扣子](https://www.coze.cn)** | 字节跳动低代码 Agent 平台 | 快速搭建聊天机器人、C 端轻量应用 | 私有化部署（仅 SaaS）、开源定制 | 闭源 SaaS |
+| **[DeerFlow](https://github.com/bytedance/deer-flow)** | 字节开源：深度研究 + 多 Agent 报告生成 | 自动研究报告、内容创作 | 通用对话、实时交互 | MIT |
+
+**对比总结：**
+
+| 需求场景 | 选哪个 |
+|----------|--------|
+| 5 分钟内上线一个能用的 Agent | Dify 或 Coze |
+| 只换皮 ChatGPT（私有部署） | Open WebUI |
+| 企业知识库（PDF 大文档） | RAGFlow + FastGPT |
+| 自动化流程（非聊天） | n8n |
+| 做深度研究报告 | DeerFlow |
+
+#### A2. 可以集成到项目的框架与库 / Frameworks & Libraries
+
+##### 多 Agent 编排 / Orchestration
+
+| 框架 | 适合场景 | 学习成本 | 灵活性 |
+|------|---------|----------|--------|
+| **LangGraph** | 复杂状态机、任务循环、检查点恢复 | 中 | ⭐⭐⭐⭐⭐ |
+| **CrewAI** | 多角色协作、科研/内容生产 | 低 | ⭐⭐⭐ |
+| **AutoGen** (Microsoft) | 多 Agent 对话、编程协作 | 中 | ⭐⭐⭐⭐ |
+| **MetaGPT** | 软件开发全流程（模拟团队） | 中 | ⭐⭐⭐ |
+| **CAMEL** | 角色扮演 Agent 对话研究 | 低 | ⭐⭐ |
+| **Google ADK** | Google 生态 Agent 开发 | 中 | ⭐⭐⭐⭐ |
+
+##### 前端 / Frontend
+
+| 项目 | 用途 |
+|------|------|
+| **[Vercel AI Chatbot](https://github.com/vercel/ai-chatbot)** | Next.js + Vercel AI SDK + 流式 UI（直接 fork 用） |
+| **[LibreChat](https://github.com/danny-avocado/librechat)** | 多模型、多用户、合规的开源 ChatGPT 替代品 |
+| **[chatbot-ui](https://github.com/mckaywrigley/chatbot-ui)** | Vercel AI 的前身，简洁轻量 |
+| **Open WebUI 前端** | 自托管 ChatGPT 皮（React + Svelte） |
+
+##### 后端 / Backend
+
+| 项目 | 用途 |
+|------|------|
+| **[LiteLLM](https://github.com/BerriAI/litellm)** | 统一 100+ LLM Provider 接口 + 代理 + 限流 |
+| **[Ollama](https://github.com/ollama/ollama)** | 本地模型一键运行（GPU/CPU） |
+| **[vLLM](https://github.com/vllm-project/vllm)** | 高吞吐 LLM 推理引擎（生产级） |
+| **[Open WebUI Backend](https://github.com/open-webui/open-webui)** | Python FastAPI + WebSocket 多用户后端 |
+
+##### 向量检索 & RAG
+
+| 项目 | 特点 |
+|------|------|
+| **[LlamaIndex](https://github.com/run-llama/llama_index)** | 最全面的 RAG 框架（数据摄入→索引→检索→Agent） |
+| **[Haystack](https://github.com/deepset-ai/haystack)** | 模块化 NLP 管道（德国 deepset） |
+| **[RAGFlow](https://github.com/infiniflow/ragflow)** | 复杂文档解析见长（OCR、表格结构识别） |
+| **[Qdrant](https://github.com/qdrant/qdrant)** | Rust 向量数据库（高性能、支持过滤） |
+| **[Milvus](https://github.com/milvus-io/milvus)** | 分布式向量数据库（Zilliz，十亿级） |
+| **[Chroma](https://github.com/chroma-core/chroma)** | 嵌入式向量库（极简 API） |
+
+##### MCP 生态 / MCP Ecosystem
+
+| 项目 | 用途 |
+|------|------|
+| **`@modelcontextprotocol/sdk`** | MCP 官方 TypeScript SDK（必须用） |
+| **[Playwright MCP](https://github.com/microsoft/playwright-mcp)** | 浏览器自动化 MCP Server |
+| **[Filesytem MCP](https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem)** | 文件系统操作 |
+| **[GitHub MCP](https://github.com/modelcontextprotocol/servers/tree/main/src/github)** | GitHub 操作 |
+| **[Slack MCP](https://github.com/modelcontextprotocol/servers/tree/main/src/slack)** | Slack 集成 |
+| **[Google Drive MCP](https://github.com/modelcontextprotocol/servers/tree/main/src/gdrive)** | Google Drive |
+
+##### 沙箱 & 安全
+
+| 项目 | 特点 |
+|------|------|
+| **[E2B](https://github.com/e2b-dev/e2b)** | 云原生 Agent 沙箱（OpenAPI + SDK） |
+| **[Daytona](https://github.com/daytonaio/daytona)** | 开发环境沙箱（对标 GitHub Codespaces） |
+| **[Modal](https://github.com/modal-labs/modal)** | Serverless GPU 沙箱（Python 原生） |
+| **[Casbin](https://github.com/casbin/casbin)** | 多模型权限引擎（RBAC/ABAC） |
+
+##### 可观测性 & Eval
+
+| 项目 | 特点 |
+|------|------|
+| **[Langfuse](https://github.com/langfuse/langfuse)** | 开源 LLM 可观测平台（Trace/Eval/Prompt 管理） |
+| **[Helicone](https://github.com/Helicone/helicone)** | LLM 网关 + 可观测性（一行代码接入） |
+| **[Phoenix (Arize)](https://github.com/Arize-AI/phoenix)** | LLM 离线评估 + 可观测 |
+| **[PromptFoo](https://github.com/promptfoo/promptfoo)** | LLM 测试/评估/红队 |
+
+### 路径 B：用本 Skill 从头搭建（当你需要完全控制时）
+
+选择路径 A 中的开源项目无法满足以下需求时，才走我们的 reference 搭建：
+
+1. **独特的品牌体验** — UI 交互完全定制
+2. **独特的 Agent 行为** — 特殊的编排逻辑、自研算法
+3. **深度 Electron 集成** — 桌面端原生能力（系统托盘、全局快捷键、跨进程）
+4. **离线优先** — 不依赖任何外部云服务的全自托管
+5. **学习目的** — 你真的想理解每一层的运作机制
+
+#### 路径 A + B 的混合策略 / Hybrid
+
+最常见也最推荐的路径：**用开源产品做基础 + 用本 Skill 做深度定制**。
+
+| 组合 | 效果 |
+|------|------|
+| Dify（后端+Workflow） + 本 Skill 参考自建前端 | 省 80% 后端工时，自定义品牌 UI |
+| Open WebUI（前端） + 本 Skill 参考自建 Agent 核心 | 用成熟前端体验，用自定义 Agent 逻辑 |
+| LangGraph（编排） + LlamaIndex（RAG） + 本 Skill 参考做前端+Electron | 核心层全用开源，产品层自建 |
+| n8n（流程） + 自建 Agent 节点 | 自动编排为主，智能决策自建 |
+
+### Agent 决策流程
+
+评估用户需求时，按以下顺序判断：
+
+```
+Stack0: 有没有现成开源产品直接能部署用？
+  → YES: 列出2-3个候选 + 对比 → 用现成方案
+  → NO: Stack1
+
+Stack1: 有没有开源框架能覆盖70%+需求？
+  → YES: 列出框架 + 空缺部分用本Skill补充 → 混合方案
+  → NO: Stack2
+
+Stack2: 业务高度定制化，需要完全控制。
+  → 使用本Skill的 references/ 从头搭建
+```
+
+**无论走哪条路，references/ 里的工程经验（AI避坑、边缘场景处理、性能优化）都是通用的。**
 
 Use the decision tree below to determine which reference(s) to load:
 

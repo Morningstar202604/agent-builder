@@ -344,6 +344,8 @@ export interface LLMMessage {
   tool_call_id?: string;
   tool_calls?: LLMToolCall[];
   name?: string;
+  id?: string;
+  createdAt?: number;
 }
 
 export interface LLMToolCall {
@@ -462,7 +464,7 @@ export class OpenAIClient implements LLMClient {
         if (choice.finish_reason) {
           for (const [, tc] of toolCallAccum)
             yield { type: 'tool_call_end', data: { toolCallId: tc.id, name: tc.name, args: tc.args } };
-          yield { type: 'done', data: { finishReason: choice.finish_reason === 'stop' ? 'stop' : choice.finish_reason === 'length' ? 'length' : choice.finish_reason === 'tool_calls' ? 'tool_calls' : 'error' } };
+          yield { type: 'done', data: { finishReason: choice.finish_reason === 'stop' ? 'stop' : choice.finish_reason === 'length' ? 'length' : choice.finish_reason === 'tool_calls' ? 'tool_calls' : choice.finish_reason === 'content_filter' ? 'content_filter' : 'error' } };
           return;
         }
       }
@@ -668,11 +670,11 @@ export abstract class AbstractAgent {
 
   constructor(config: AgentConfig) {
     this.config = { maxIterations: 10, ...config };
-    this.maxIterations = this.config.maxIterations ?? 10;
+    this.maxIterations = this.config.maxIterations;
   }
 
   async *run(userMessage: string, context: AgentContext): AsyncGenerator<AgentEvent> {
-    context.messages.push({ id: nanoid(), role: 'user', content: userMessage, createdAt: Date.now() } as LLMMessage);
+    context.messages.push({ id: nanoid(), role: 'user', content: userMessage, createdAt: Date.now() });
 
     for (let i = 0; i < this.maxIterations; i++) {
       if (context.signal?.aborted) { yield { type: 'error', error: 'Session aborted' }; return; }
@@ -703,20 +705,20 @@ export abstract class AbstractAgent {
       }
 
       if (pendingToolCalls.length === 0) {
-        context.messages.push({ id: nanoid(), role: 'assistant', content: assistantContent, createdAt: Date.now() } as LLMMessage);
+        context.messages.push({ id: nanoid(), role: 'assistant', content: assistantContent, createdAt: Date.now() });
         yield { type: 'done', finishReason: 'stop' }; return;
       }
 
       context.messages.push({
         id: nanoid(), role: 'assistant', content: assistantContent, createdAt: Date.now(),
         tool_calls: pendingToolCalls.map(tc => ({ id: tc.id, type: 'function' as const, function: { name: tc.name, arguments: JSON.stringify(tc.args) } })),
-      } as LLMMessage);
+      });
 
       for (const tc of pendingToolCalls) {
         const tool = this.config.tools.find(t => t.name === tc.name);
         if (!tool) {
           yield { type: 'tool_error', toolName: tc.name, toolCallId: tc.id, error: `Unknown tool: ${tc.name}` };
-          context.messages.push({ id: nanoid(), role: 'tool', content: JSON.stringify({ error: `Tool "${tc.name}" not found` }), tool_call_id: tc.id, createdAt: Date.now() } as LLMMessage);
+          context.messages.push({ id: nanoid(), role: 'tool', content: JSON.stringify({ error: `Tool "${tc.name}" not found` }), tool_call_id: tc.id, createdAt: Date.now() });
           continue;
         }
 
@@ -724,11 +726,11 @@ export abstract class AbstractAgent {
         try {
           const result = await tool.execute(tc.args, { signal: context.signal, sessionId: context.sessionId });
           yield { type: 'tool_complete', toolName: tc.name, toolCallId: tc.id, result };
-          context.messages.push({ id: nanoid(), role: 'tool', content: typeof result === 'string' ? result : JSON.stringify(result), tool_call_id: tc.id, createdAt: Date.now() } as LLMMessage);
+          context.messages.push({ id: nanoid(), role: 'tool', content: typeof result === 'string' ? result : JSON.stringify(result), tool_call_id: tc.id, createdAt: Date.now() });
         } catch (toolError) {
           const errMsg = toolError instanceof Error ? toolError.message : 'Tool execution failed';
           yield { type: 'tool_error', toolName: tc.name, toolCallId: tc.id, error: errMsg };
-          context.messages.push({ id: nanoid(), role: 'tool', content: JSON.stringify({ error: errMsg }), tool_call_id: tc.id, createdAt: Date.now() } as LLMMessage);
+          context.messages.push({ id: nanoid(), role: 'tool', content: JSON.stringify({ error: errMsg }), tool_call_id: tc.id, createdAt: Date.now() });
         }
       }
     }
@@ -762,7 +764,11 @@ export class Conversation {
 
   getMessages(): AgentContext['messages'] { return [...this.context.messages]; }
   setAbortSignal(signal: AbortSignal): void { this.context.signal = signal; }
-  abort(): void { this.context.signal?.abort(); this.context.signal = new AbortController().signal; }
+  abort(): void {
+    const controller = new AbortController();
+    this.context.signal?.abort();
+    this.context.signal = controller.signal;
+  }
   restore(messages: AgentContext['messages']): void { this.context.messages = messages; }
 }
 ```
@@ -879,7 +885,55 @@ export async function POST(req: NextRequest) {
 import { createLLMClient } from '@agentcore/core/llm';
 import { Conversation } from '@agentcore/core/agent';
 
-export const sessions = new Map<string, Conversation>();
+const MAX_SESSIONS = 100;
+const SESSION_TTL_MS = 30 * 60 * 1000;  // 30 分钟过期
+
+class MaxSizeMap<K, V> extends Map<K, V> {
+  private maxSize: number;
+  private lastAccessed = new Map<K, number>();
+
+  constructor(maxSize: number) {
+    super();
+    this.maxSize = maxSize;
+  }
+
+  get(key: K): V | undefined {
+    const val = super.get(key);
+    if (val !== undefined) this.lastAccessed.set(key, Date.now());
+    return val;
+  }
+
+  set(key: K, value: V): this {
+    if (this.size >= this.maxSize && !this.has(key)) {
+      // LRU 淘汰：移除最久未访问的
+      let oldestKey: K | null = null;
+      let oldestTime = Infinity;
+      for (const [k, t] of this.lastAccessed) {
+        if (t < oldestTime) { oldestTime = t; oldestKey = k; }
+      }
+      if (oldestKey !== null) {
+        this.delete(oldestKey);
+        this.lastAccessed.delete(oldestKey);
+      }
+    }
+    super.set(key, value);
+    this.lastAccessed.set(key, Date.now());
+    return this;
+  }
+}
+
+export const sessions = new MaxSizeMap<string, Conversation>(MAX_SESSIONS);
+
+// 定期清理过期会话
+const cleanupInterval = setInterval(() => {
+  const now = Date.now();
+  for (const [key, time] of (sessions as any).lastAccessed) {
+    if (now - time > SESSION_TTL_MS) {
+      sessions.delete(key);
+      (sessions as any).lastAccessed.delete(key);
+    }
+  }
+}, 60 * 1000);
 
 export function getOrCreateSession(sessionId: string): Conversation {
   let conv = sessions.get(sessionId);

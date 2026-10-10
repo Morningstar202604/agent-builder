@@ -159,11 +159,14 @@ export class MarketplaceStore {
       throw new Error('Paid listings require verified publisher status');
     }
 
+    // P1 修复：weeklyDownloads 初始化为 0 无实际数据。
+    // 注意：应通过独立统计服务异步计算并回填（例如定时任务汇总近 7 天下载量）。
+    // 发布新 listing 时 weeklyDownloads 写 0 仅为占位，统计服务会在首次汇总后更新。
     return db.listings.create({
       ...listing,
       id: crypto.randomUUID(),
       installCount: 0,
-      weeklyDownloads: 0,
+      weeklyDownloads: 0, // TODO: 由统计服务异步回填，非真实数据
       reviewStatus: 'pending',
       publishedAt: Date.now(),
       updatedAt: Date.now(),
@@ -294,8 +297,9 @@ async function validateManifest(skillDir: string): Promise<Record<string, unknow
     if (!manifest[key]) throw new Error(`manifest.json missing required field: ${key}`);
   }
 
-  // version 必须是 semver
-  if (!/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(manifest.version)) {
+  // version 必须是 semver（P0 修复：自定义正则过严，改用标准 semver.valid）
+  import semver from 'semver';
+  if (!semver.valid(manifest.version)) {
     throw new Error(`Invalid semver in manifest.json: ${manifest.version}`);
   }
 
@@ -368,9 +372,14 @@ export async function runSecurityScan(skillDir: string): Promise<{
     const fetchMatches = content.match(/fetch\s*\(\s*["']https?:\/\/[^"']+/g) ?? [];
     for (const match of fetchMatches) {
       const url = match.replace(/fetch\s*\(\s*["']/, '');
-      const hostname = new URL(url).hostname;
-      if (!whitelist.some((w) => hostname.endsWith(w))) {
-        warnings.push(`${file}: Makes network request to ${hostname} — user must trust this endpoint`);
+      // P0 修复：new URL() 在非标准输入上会抛错导致扫描中断，包裹 try/catch
+      try {
+        const hostname = new URL(url).hostname;
+        if (!whitelist.some((w) => hostname.endsWith(w))) {
+          warnings.push(`${file}: Makes network request to ${hostname} — user must trust this endpoint`);
+        }
+      } catch {
+        warnings.push(`${file}: Contains fetch to unparseable URL "${url}" — manual review required`);
       }
     }
 
@@ -512,9 +521,10 @@ export class DiscoveryEngine {
   /**
    * Trending：近 7 天下载量增速最快的 Skill。
    *
-   * 算法：delta = weeklyDownloads - (installCount / publishedWeeks)
-   * delta 最高 = 近期增速最猛。比纯"下载新量"更公平——
-   * 老 Skill 积累再多下载，如果近期增速平平也排不上来。
+   * 原算法（P2 修复）：delta = weeklyDownloads - (installCount / publishedWeeks)
+   * 新算法改用相对增长率：growthRate = (weeklyDownloads - baseline) / baseline
+   * 避免老 Skill 因 absolute baseline 高而永远排不上 Trending。
+   * 加权安装量（+1 防止除零）：新 Skill 有利。
    */
   private async trending(opts: DiscoveryOptions): Promise<Listing[]> {
     const listings = await db.listings.findApproved({
@@ -528,8 +538,10 @@ export class DiscoveryEngine {
         1,
         (now - l.publishedAt) / (1000 * 60 * 60 * 24 * 7),
       );
-      const baseline = l.installCount / publishedWeeks;
-      const velocity = l.weeklyDownloads - baseline;
+      const baseline = Math.max(l.installCount / publishedWeeks, 1); // 最低 1 防除零
+      // 相对增长率：(growth * installCount) — 同时加权安装量（热门 + 增速高 → 上榜）
+      const growthRate = (l.weeklyDownloads - baseline) / baseline;
+      const velocity = growthRate * Math.log1p(l.installCount + 1); // 对数加权安装量
       return { listing: l, score: velocity };
     });
 
@@ -824,7 +836,9 @@ export interface LicenseValidation {
   reason?: string;
 }
 
-export function validateLicenseKey(key: string, listingId: string): LicenseValidation {
+// P0 修复：原函数用了 await 但未声明 async（TS 编译失败）。
+// 改为 async 函数，调用处需 await。
+export async function validateLicenseKey(key: string, listingId: string): Promise<LicenseValidation> {
   const SECRET = process.env.LICENSE_SECRET;
   if (!SECRET) throw new Error('LICENSE_SECRET not configured');
 

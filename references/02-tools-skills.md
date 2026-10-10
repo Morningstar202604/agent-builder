@@ -138,8 +138,8 @@ export class TiktokenEstimator implements TokenEstimator {
   async initialize(): Promise<void> {
     // @vscode/vscode-languagedetection 或 tiktoken 的 wasm 版本
     // 这里用动态 import 避免强制依赖
-    const { get_encoding } = await import('tiktoken/lite');
-    this.encoder = get_encoding('cl100k_base');  // GPT-4/4o/turbo 用的
+    const tiktoken = await import('tiktoken/lite');
+    this.encoder = await tiktoken.get_encoding('cl100k_base');  // GPT-4/4o/turbo 用的
   }
 
   async estimate(messages: LLMMessage[]): Promise<number> {
@@ -290,14 +290,14 @@ export class ContextCompressor {
 
     const systemMessages = messages.filter(m => m.role === 'system');
     const conversationMessages = messages.filter(m => m.role !== 'system');
-    const convPreserveStart = preserveStartIndex - systemMessages.length;
+    const convPreserveStart = Math.max(0, preserveStartIndex - systemMessages.length);
 
     if (convPreserveStart <= 0) {
       return { preserved: messages, toCompress: [] };
     }
 
     return {
-      preserved: [...systemMessages, ...conversationMessages.slice(convPreserveStart)],
+      preserved: conversationMessages.slice(convPreserveStart),
       toCompress: conversationMessages.slice(0, convPreserveStart),
     };
   }
@@ -586,7 +586,7 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, {
   'gpt-4o': { contextWindow: 128000, outputLimit: 16384, estimator: 'tiktoken-wasm' },
   'gpt-4o-mini': { contextWindow: 128000, outputLimit: 16384, estimator: 'tiktoken-wasm' },
   'gpt-4-turbo': { contextWindow: 128000, outputLimit: 4096, estimator: 'tiktoken-wasm' },
-  'gpt-3.5-turbo': { contextWindow: 16000, outputLimit: 4096, estimator: 'tiktoken-wasm' },
+  'gpt-3.5-turbo': { contextWindow: 16385, outputLimit: 4096, estimator: 'tiktoken-wasm' },
   'claude-sonnet-4-20250514': { contextWindow: 200000, outputLimit: 4096, estimator: 'chars' },
   'claude-haiku-3-5': { contextWindow: 200000, outputLimit: 4096, estimator: 'chars' },
   'deepseek-chat': { contextWindow: 64000, outputLimit: 4096, estimator: 'chars' },
@@ -857,13 +857,15 @@ export class ToolRegistry {
       const start = Date.now();
       try {
         const result = await this.executeWithTimeout(tool, args, ctx, timeout);
-        const latency = Date.now() - start;
-        stat.calls++;
-        stat.avgLatency = (stat.avgLatency * (stat.calls - 1) + latency) / stat.calls;
+        if (attempt === 0) {
+          const latency = Date.now() - start;
+          stat.calls++;
+          stat.avgLatency = (stat.avgLatency * (stat.calls - 1) + latency) / stat.calls;
+        }
         return result;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
-        stat.failures++;
+        if (attempt === 0) stat.failures++;
 
         if (error instanceof ToolError && error.code === 'TIMEOUT') {
           throw error;  // 超时不重试
@@ -931,7 +933,7 @@ import { createHash } from 'crypto';
 import type { ToolContext } from '../../agent/types';
 import type { RegisteredTool } from '../registry';
 
-const ALLOWED_PATHS = (process.env.ALLOWED_PATHS ?? process.cwd()).split(':');
+const ALLOWED_PATHS = (process.env.ALLOWED_PATHS ?? process.cwd()).split(path.delimiter);
 
 function isPathAllowed(targetPath: string): boolean {
   const resolved = path.resolve(targetPath);

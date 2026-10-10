@@ -1,14 +1,14 @@
 # 22 — 护栏与追踪 · Guardrails 生命周期 · OpenTelemetry 全链路可观测性
 
 > **⚠️ 不要重造以下东西：**
-> - Guardrails → 用 **OpenAI Agents SDK**（`InputGuardrail` + `OutputGuardrail` + `Runner hooks`），不要手写正则/敏感词
+> - Guardrails → 参考 **OpenAI Agents SDK** 的架构理念（`InputGuardrail` + `OutputGuardrail` + `Runner hooks`），本文件实现一套等效的自定义 Guardrail 系统
 > - Tracing/Observability → 用 **OpenTelemetry SDK** + **Langfuse**，不要手写 Span 和 Trace
 > - Token 消耗统计 → 用 **Langfuse** callback handler，不要手写 counter
 > - Prompt 追踪 → 用 **Langfuse Trace** / **Helicone**，不要手写日志
 >
-> 本 reference 的价值：告诉你 Guardrails 的三层选用策略（必选输入护栏 vs 可选输出护栏 vs 工具护栏）以及如何自定义业务护栏逻辑。**不要从零写护栏系统，用 OpenAI Agents SDK + Langfuse 两者组合。**
+> 本 reference 的价值：告诉你 Guardrails 的三层选用策略（必选输入护栏 vs 可选输出护栏 vs 工具护栏）以及如何自定义业务护栏逻辑。**参考 OpenAI Agents SDK 架构理念，结合 Langfuse 实现可观测性。**
 
-> 目标：Agent 不只是"能跑"——必须在每一次输入/输出/工具调用处都有安全护栏，每一次推理都有完整追踪数据。本章从 OpenAI Agents SDK 的 Guardrail 架构出发，构建 Input/Output/Tool 四层护栏体系，并集成 OpenTelemetry 实现生产级全链路可观测性。
+> 目标：Agent 不只是"能跑"——必须在每一次输入/输出/工具调用处都有安全护栏，每一次推理都有完整追踪数据。本章参考 OpenAI Agents SDK 的架构理念，实现一套等效的自定义 Guardrail 系统，构建 Input/Output/Tool 四层护栏体系，并集成 OpenTelemetry 实现生产级全链路可观测性。
 
 ---
 
@@ -58,7 +58,7 @@ Agent 的安全是"两层夹心"的：
 
 🔗 **工程逻辑**：Guardrails 不是"一个 check 函数"——它是一个包含类型、上下文、触发参数（tripwire）的完整 Pipeline。每个 Guardrail 运行在独立 Callable 中，失败时抛出特定异常，Runner 负责捕获并转换为结构化事件。
 
-### 1.2 OpenAI Agents SDK 架构映射
+### 1.2 架构映射（参考 OpenAI Agents SDK 设计理念）
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -330,19 +330,28 @@ export class InputGuardrailRunner<TContext = unknown> {
     }
 
     // === 第二阶段：并行执行 ===
+    // 使用 Promise.allSettled 而非 Promise.all —— 单个 guardrail 超时或被 abort 时
+    // 不应阻断其他已通过的结果。规则：任何一个已完成的 guardrail 触发阻断 → 整体阻断；
+    // 超时不影响已返回结果（fail-open for timed-out guardrails）。
     if (parallelGuardrails.length > 0) {
-      const results = await Promise.all(
+      const settledResults = await Promise.allSettled(
         parallelGuardrails.map((g) =>
           this.executeWithTimeout(g, ctx, g.timeoutMs ?? 3000, signal),
         ),
       );
 
-      for (let i = 0; i < results.length; i++) {
-        if (results[i].tripwire_triggered) {
+      for (let i = 0; i < settledResults.length; i++) {
+        const r = settledResults[i];
+        if (r.status === 'rejected') {
+          // 超时或 abort —— 不阻断（fail-open），记录日志
+          console.warn(`[InputGuardrail] '${parallelGuardrails[i].name}' ${r.reason}`);
+          continue;
+        }
+        if (r.value.tripwire_triggered) {
           throw new GuardrailTripwireTriggered(
             'input',
             parallelGuardrails[i].name,
-            results[i].reason ?? 'Unknown',
+            r.value.reason ?? 'Unknown',
             {
               userInput: ctx.userInput,
               sessionId: ctx.sessionId,
@@ -1549,7 +1558,9 @@ export class AgentTracer {
   ): ActiveSpan {
     const traceId = randomUUID();
     const spanId = randomUUID();
-    const startTime = performance.now();
+    // 使用 Date.now() 作为原始时间戳（Unix epoch ms），recordSpan 内部转为纳秒 epoch
+    // 注意：不能用 performance.now()——它是相对时间，不从 Unix epoch 开始
+    const startTime = Date.now();
 
     return new ActiveSpan(
       this,
@@ -1588,7 +1599,11 @@ export class AgentTracer {
       spanId,
       parentSpanId,
       attributes,
-      startTimestamp: startTime * 1000000,     // nanoseconds
+      // 注意：performance.now() 是相对时间（页面加载后的毫秒数），不是 Unix epoch
+      // 要转换为纳秒 Unix epoch 需使用 Date.now() * 1000000
+      // 这里 startTimestamp/endTimestamp 保持语义一致——若 startTime 来自 performance.now()
+      // 则也是相对时间；若需绝对时间，调用方应传入 Date.now() 而非 performance.now()
+      startTimestamp: startTime * 1000000,     // 转换为纳秒（前提是 startTime 是 ms）
       endTimestamp: endTime * 1000000,
       durationMs: endTime - startTime,
       status,
@@ -1683,7 +1698,7 @@ export class ActiveSpan {
       this.traceId,
       this.spanId,
       { ...this.attributes, ...attributes },
-      performance.now(),
+      Date.now(),  // 使用 Date.now() 保持与父 span 一致的 Unix epoch
     );
   }
 
@@ -1698,7 +1713,7 @@ export class ActiveSpan {
       this.parentSpanId,
       this.attributes,
       this.startTime,
-      performance.now(),
+      Date.now(),  // 使用 Date.now() 保持与 startTime 一致（均为 Unix epoch ms）
       status,
       errorMessage,
     );
@@ -1865,9 +1880,12 @@ export class LangfuseExporter implements SpanExporter {
             output: span.attributes['gen_ai.usage.output_tokens'] ?? 0,
             total: span.attributes['gen_ai.usage.total_tokens'] ?? 0,
             unit: 'TOKENS',
-            inputCost: span.attributes['gen_ai.usage.cost_usd'] ?? 0,
-            outputCost: span.attributes['gen_ai.usage.cost_usd'] ?? 0,
-            totalCost: span.attributes['gen_ai.usage.cost_usd'] ?? 0,
+            // input/output cost 必须从独立属性读取，不能都用 total cost
+            // 服务端通常会在 span attributes 中设置 gen_ai.usage.input_cost_usd / output_cost_usd
+            inputCost: span.attributes['gen_ai.usage.input_cost_usd'] ?? 0,
+            outputCost: span.attributes['gen_ai.usage.output_cost_usd'] ?? 0,
+            totalCost: (span.attributes['gen_ai.usage.input_cost_usd'] ?? 0) +
+                       (span.attributes['gen_ai.usage.output_cost_usd'] ?? 0),
           }
         : undefined,
       statusMessage: span.errorMessage,

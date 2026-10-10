@@ -142,7 +142,7 @@ import type { ToolCallAdapter, NormalizedToolCall } from '../tool-call-adapter';
 export class OpenAIAdapter implements ToolCallAdapter {
   readonly provider = 'openai-compatible';
 
-  buildToolDefinitions(tools: LLMToolDefinition[]): any[] {
+  buildToolDefinitions(tools: LLMToolDefinition[]): Array<{ type: 'function'; function: { name: string; description: string; parameters: any } }> {
     return tools.map(t => ({
       type: 'function' as const,
       function: {
@@ -201,11 +201,11 @@ import type { ToolCallAdapter, NormalizedToolCall } from '../tool-call-adapter';
 export class AnthropicAdapter implements ToolCallAdapter {
   readonly provider = 'anthropic';
 
-  buildToolDefinitions(tools: LLMToolDefinition[]): any[] {
+  buildToolDefinitions(tools: LLMToolDefinition[]): Array<{ name: string; description: string; input_schema: any }> {
     return tools.map(t => ({
       name: t.function.name,
       description: t.function.description,
-      input_schema: t.function.parameters as any,  // Anthropic 用 input_schema 而非 parameters
+      input_schema: t.function.parameters,
     }));
   }
 
@@ -256,13 +256,13 @@ import type { ToolCallAdapter, NormalizedToolCall } from '../tool-call-adapter';
 export class GeminiAdapter implements ToolCallAdapter {
   readonly provider = 'gemini';
 
-  buildToolDefinitions(tools: LLMToolDefinition[]): any[] {
+  buildToolDefinitions(tools: LLMToolDefinition[]): Array<{ function_declarations: Array<{ name: string; description: string; parameters: any }> }> {
     // Gemini 用 function_declarations 包装
     return [{
       function_declarations: tools.map(t => ({
         name: t.function.name,
         description: t.function.description,
-        parameters: t.function.parameters as any,
+        parameters: t.function.parameters,
       })),
     }];
   }
@@ -369,11 +369,11 @@ export const DEFAULT_RETRY_CONFIG: RetryConfig = {
 
 /** 工具调用错误分类 */
 export type ToolCallError =
-  | { type: 'VALIDATION'; toolName: string; detail: string }
-  | { type: 'JSON_PARSE'; toolName: string; rawInput: string; detail: string }
-  | { type: 'TOOL_NOT_FOUND'; toolName: string }
-  | { type: 'TOOL_TIMEOUT'; toolName: string; timeoutMs: number }
-  | { type: 'TOOL_EXECUTION'; toolName: string; detail: string };
+  | { type: 'VALIDATION'; toolName: string; id: string; detail: string }
+  | { type: 'JSON_PARSE'; toolName: string; id: string; rawInput: string; detail: string }
+  | { type: 'TOOL_NOT_FOUND'; toolName: string; id: string }
+  | { type: 'TOOL_TIMEOUT'; toolName: string; id: string; timeoutMs: number }
+  | { type: 'TOOL_EXECUTION'; toolName: string; id: string; detail: string };
 
 /**
  * 工具调用重试引擎
@@ -408,7 +408,7 @@ export class ToolCallRetryEngine {
         const content = this.config.validationErrorTemplate.replace('{detail}', error.detail);
         return {
           retryable: canRetry,
-          errorResult: { tool_call_id: '', content },
+          errorResult: { tool_call_id: error.id, content },
         };
       }
 
@@ -421,7 +421,7 @@ export class ToolCallRetryEngine {
             return {
               retryable: false,  // 已修复，不需要再让 LLM 重来
               errorResult: {
-                tool_call_id: '',
+                tool_call_id: error.id,
                 content: JSON.stringify({ _repaired: true, _repairedArguments: repaired }),
               },
             };
@@ -430,7 +430,7 @@ export class ToolCallRetryEngine {
         return {
           retryable: canRetry,
           errorResult: {
-            tool_call_id: '',
+            tool_call_id: error.id,
             content: `工具 "${error.toolName}" 的参数 JSON 解析失败：${error.detail}。请确保输出合法 JSON。`,
           },
         };
@@ -441,7 +441,7 @@ export class ToolCallRetryEngine {
         return {
           retryable: false,
           errorResult: {
-            tool_call_id: '',
+            tool_call_id: error.id,
             content: `工具 "${error.toolName}" 不存在。请从可用工具列表中选择。`,
           },
         };
@@ -451,7 +451,7 @@ export class ToolCallRetryEngine {
         return {
           retryable: false,
           errorResult: {
-            tool_call_id: '',
+            tool_call_id: error.id,
             content: `工具 "${error.toolName}" 执行超时（${error.timeoutMs}ms）。请简化输入或分批处理。`,
           },
         };
@@ -461,11 +461,29 @@ export class ToolCallRetryEngine {
         return {
           retryable: canRetry,
           errorResult: {
-            tool_call_id: '',
+            tool_call_id: error.id,
             content: `工具 "${error.toolName}" 执行出错：${error.detail}。`,
           },
         };
     }
+  }
+
+  /**
+   * 分类 API 层错误是否为可重试
+   *
+   * 用于 OpenAI/其他 Provider API 调用层的重试循环：
+   * - 429 (rate limit) / 5xx → retryable
+   * - 4xx (bad request, auth) → non-retryable (重试无意义)
+   *
+   * 建议在 OpenAIError 类中添加 retryable: boolean 属性，
+   * retry 循环中检查此属性跳过不可重试错误，避免无效等待。
+   */
+  static isRetryableError(error: { status?: number; message?: string }): boolean {
+    const status = error.status;
+    if (status && status >= 400 && status < 500 && status !== 429) return false;
+    if (status && status >= 500) return true;
+    // 网络类错误（无 status）默认可重试
+    return true;
   }
 
   /**

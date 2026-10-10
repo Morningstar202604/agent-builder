@@ -141,38 +141,30 @@ export class PDFParser implements DocumentParser {
 
   async parse(buffer: Buffer, fileName: string, _mimeType: string): Promise<ParsedDocument> {
     const pdfParse = await this.getParser();
-    const data = await pdfParse(buffer, {
-      // 页码追踪回调——每次开始新页时触发
-      pagerender: (pageData: any) => {
-        // 保留每页的文本内容，后续用于生成带页码的 sections
-        return pageData.getTextContent({
-          normalizeWhitespace: true,
-          disableCombineTextItems: false,
-        }).then((textContent: any) => {
-          const pageText = textContent.items
-            .map((item: any) => item.str)
-            .join(' ')
-            .replace(/\s+/g, ' ')
-            .trim();
-          return pageText;
-        });
-      },
-    });
+    // 🔑 pdf-parse v1 的 pagerender 是同步回调，不支持 async/Promise 返回值
+    // 正确做法：不用 pagerender，直接用 data.text 按分页符拆分
+    const data = await pdfParse(buffer);
 
-    // 构建 sections：按页码分段
+    // 构建 sections：按页码分段（用分页符 \f 拆分每页文本）
     const sections: DocumentSection[] = [];
-    const pages = data.text.split(/\f/); // 分页符
+    const pages = data.text.split(/\f/);
 
+    // 🔑 正确计算每页在全文中的字符偏移（position.start 不能始终为 0）
+    let globalOffset = 0;
     pages.forEach((pageText, pageIdx) => {
       const trimmed = pageText.trim();
+      // 当前页在全文中的起始偏移 = 之前所有页长度累加
+      const pageStart = globalOffset;
       if (trimmed.length > 0) {
         sections.push({
           id: `pdf-${uuid()}-${pageIdx}`,
           content: trimmed,
           pageNumber: pageIdx + 1,
-          position: { start: 0, end: trimmed.length },
+          position: { start: pageStart, end: pageStart + trimmed.length },
         });
       }
+      // 更新偏移量：包含当前页原始长度（trimmed 可能短于 pageText）
+      globalOffset += pageText.length;
     });
 
     return {

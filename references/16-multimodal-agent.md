@@ -91,6 +91,8 @@ export interface ModalityCapability {
 export class ModalityRouter {
   private models = new Map<string, ModalityCapability>();
   private defaultModel: string;
+  /** 🔁 上次 selectModel 是否发生回退（调用方可据此告知用户"无法处理图片"） */
+  lastFallbackNotice: string | null = null;
 
   constructor(defaultModel: string) {
     this.defaultModel = defaultModel;
@@ -106,9 +108,11 @@ export class ModalityRouter {
    * 选择逻辑：
    * 1. 过滤出支持所有所需输入模态的模型
    * 2. 在满足条件的模型中，按成本选最便宜的
-   * 3. 没有匹配的，回退到 defaultModel（假设 defaultModel 是"全能模型"）
+   * 3. 没有匹配的，回退到 defaultModel 并设置 fallbackNotice
    */
   selectModel(inputModalities: ModalityType[]): string {
+    this.lastFallbackNotice = null;
+
     if (inputModalities.length === 1 && inputModalities[0] === 'text') {
       return this.defaultModel; // 纯文字走最便宜路线
     }
@@ -124,6 +128,12 @@ export class ModalityRouter {
       }
     }
 
+    if (!bestModel) {
+      // 🔑 没有支持该模态的模型 → fallback 到纯文本模型 + 记录提示
+      const needed = inputModalities.filter(m => m !== 'text').join('/');
+      this.lastFallbackNotice = `未找到支持 ${needed} 的模型，回退到纯文本模型 ${this.defaultModel}。图片将被忽略。`;
+    }
+
     return bestModel || this.defaultModel;
   }
 
@@ -134,8 +144,14 @@ export class ModalityRouter {
   static buildMultimodalContent(
     text: string,
     images?: Array<{ data: string; mimeType: string }>
-  ): Array<{ type: string; text?: string; image_url?: { url: string } }> {
-    const content: any[] = [{ type: 'text', text }];
+  ): Array<
+    | { type: 'text'; text: string }
+    | { type: 'image_url'; image_url: { url: string } }
+  > {
+    const content: Array<
+      | { type: 'text'; text: string }
+      | { type: 'image_url'; image_url: { url: string } }
+    > = [{ type: 'text', text }];
 
     if (images) {
       for (const img of images) {

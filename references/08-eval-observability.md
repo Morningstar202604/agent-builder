@@ -284,7 +284,7 @@ export const SATISFACTION_EVAL_CASES: EvalCase[] = [
       criteria: ['表达了理解和同理心', '给出了具体可行的建议', '不要空洞敷衍'],
       judges: [
         { provider: 'openai-compatible', model: 'gpt-4o' },
-        { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
+        { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
       ],
       judgePrompt: `同理心评估专家正在评估以下对话。请评估 Agent 的回复：
 
@@ -362,9 +362,10 @@ export class EvalRunner {
     let passed = 0;
     let failed = 0;
 
-    // 并发控制：避免打爆 API rate limit
-    const queue = [...cases];
-    const running: Promise<void>[] = [];
+    // 并发控制：用 Map 替代数组 + splice 模式，避免竞态
+    // Map 的 key 是 caseId，value 是正在运行的 Promise
+    const running = new Map<string, Promise<void>>();
+    let stopped = false;
 
     const runOne = async (evalCase: EvalCase) => {
       try {
@@ -408,27 +409,31 @@ export class EvalRunner {
             error: (err as Error).message,
           },
         });
+      } finally {
+        running.delete(evalCase.id);  // 完成即从 Map 移除，无竞态
       }
     };
 
-    while (queue.length > 0 || running.length > 0) {
-      while (running.length < this.config.concurrency && queue.length > 0) {
-        const evalCase = queue.shift()!;
-        const p = runOne(evalCase).then(() => {
-          const idx = running.indexOf(p);
-          if (idx >= 0) running.splice(idx, 1);
-        });
-        running.push(p);
+    for (const evalCase of cases) {
+      // stopOnFirstFailure 或有失败 → 不再启动新任务
+      if (this.config.stopOnFirstFailure && stopped) break;
 
-        // 若设置了 stopOnFirstFailure 且已经有失败，清空队列
-        if (this.config.stopOnFirstFailure && failed > 0) {
-          queue.length = 0;
-        }
+      const p = runOne(evalCase);
+      running.set(evalCase.id, p);
+
+      // 达到并发上限 → 等任意一个完成
+      if (running.size >= this.config.concurrency) {
+        await Promise.race(running.values());
       }
-      if (running.length > 0) {
-        await Promise.race(running);
+
+      // 检查是否触发 stopOnFirstFailure
+      if (this.config.stopOnFirstFailure && failed > 0) {
+        stopped = true;
       }
     }
+
+    // 等待剩余所有任务完成
+    await Promise.all(running.values());
 
     // 分类聚合
     const breakdown = this.buildBreakdown(results);
@@ -749,7 +754,7 @@ export function detectRegression(
 ```bash
 # 终端跑 eval
 pnpm eval --model gpt-4o --category unit
-pnpm eval --model claude-sonnet-4-20250514 --category all --concurrency 5
+pnpm eval --model claude-3-5-sonnet-20241022 --category all --concurrency 5
 ```
 
 ```typescript
@@ -908,7 +913,7 @@ export function EvalDashboard() {
         <div className="flex gap-3">
           <select className="bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text" id="eval-model">
             <option value="gpt-4o">GPT-4o</option>
-            <option value="claude-sonnet-4-20250514">Claude Sonnet 4</option>
+            <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet</option>
           </select>
           <button
             onClick={() => runEval(
@@ -1210,11 +1215,13 @@ export interface TokenCostRecord extends TokenUsageRecord {
 }
 
 /** 模型单价 —— 每 1M tokens 美元价格 */
+// ⚠️ 价格变动频繁，标注数据日期。更新 pricing 时请同步更新此日期。
+// 数据日期: 2025-01（来源: 各厂商官方 pricing page）
 const MODEL_PRICING: Record<string, { input: number; output: number }> = {
   'gpt-4o': { input: 2.5, output: 10 },
   'gpt-4o-mini': { input: 0.15, output: 0.6 },
-  'claude-sonnet-4-20250514': { input: 3, output: 15 },
-  'claude-haiku-4-20250514': { input: 1, output: 5 },
+  'claude-3-5-sonnet-20241022': { input: 3, output: 15 },
+  'claude-3-haiku-20240729': { input: 0.25, output: 1.25 },
   'deepseek-chat': { input: 0.27, output: 1.1 },
 };
 
@@ -1372,6 +1379,7 @@ export async function* traceLLMStream(
 
   let firstTokenTime = 0;
   let tokenCount = 0;
+  let ended = false;  // 🔑 防止 span 泄漏：finally 中检查
   const startTime = Date.now();
 
   try {
@@ -1390,12 +1398,14 @@ export async function* traceLLMStream(
           'llm.finish_reason': chunk.data.finishReason,
         });
         span.end();
+        ended = true;
       }
 
       if (chunk.type === 'error') {
         span.recordException(new Error(chunk.data.error));
         span.setStatus({ code: 2, message: chunk.data.error });  // ERROR
         span.end();
+        ended = true;
       }
 
       yield chunk;
@@ -1404,7 +1414,19 @@ export async function* traceLLMStream(
     span.recordException(error as Error);
     span.setStatus({ code: 2, message: (error as Error).message });
     span.end();
+    ended = true;
     throw error;
+  } finally {
+    // 🔑 如果 stream 结束但没有 done/error 事件（如 generator 被 abort），确保 end
+    if (!ended) {
+      span.setAttributes({
+        'llm.first_token_ms': firstTokenTime ? firstTokenTime - startTime : -1,
+        'llm.total_tokens': tokenCount,
+        'llm.duration_ms': Date.now() - startTime,
+        'llm.finish_reason': 'aborted',
+      });
+      span.end();
+    }
   }
 }
 

@@ -414,13 +414,29 @@ export async function recordTokenUsage(
   const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   const key = `usage:tokens:${tenant.tenantId}:${monthKey}`;
 
-  const total = await redis.incrbyby(key, inputTokens + outputTokens);
+  // P0 修复：redis.incrbyby 命令不存在，正确命令是 incrby
+  const total = await redis.incrby(key, inputTokens + outputTokens);
 
   // 设置月底过期（第一次写入时设 TTL）
   if (total <= inputTokens + outputTokens) {
     await redis.expire(key, 60 * 60 * 24 * 32); // 最长 32 天
   }
 
+  return { total, exceeded: total > quota.monthlyTokenLimit };
+}
+
+// P1 修复：recordTokenUsage("只读"调用) 有副作用（EXPIRE 续期），
+// 明确分离读写——只读方法纯 GET 不触发任何写入。
+export async function getTokenUsage(
+  monthKey?: string,
+): Promise<{ total: number; exceeded: boolean }> {
+  const tenant = getCurrentTenant();
+  const quota = TIER_QUOTAS[tenant.tenantTier];
+
+  const now = new Date();
+  const key = `usage:tokens:${tenant.tenantId}:${monthKey ?? `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`}`;
+
+  const total = Number(await redis.get(key) ?? 0); // 纯读，无副作用
   return { total, exceeded: total > quota.monthlyTokenLimit };
 }
 ```
@@ -455,8 +471,8 @@ export async function guardLLMCall(
     };
   }
 
-  // 2. 检查月度 token 用量
-  const { total: tokenTotal } = await recordTokenUsage(0, 0); // 只读不增
+  // 2. 检查月度 token 用量（P1 修复：用只读 getTokenUsage，避免 EXPIRE 续期副作用）
+  const { total: tokenTotal } = await getTokenUsage();
   if (tokenTotal >= quota.monthlyTokenLimit * 0.95) {
     return {
       ok: false,
@@ -819,13 +835,22 @@ export async function auditToolCall(toolName: string, params: unknown, result: '
   });
 }
 
+// P1 修复：浅拷贝无法脱敏嵌套对象中的敏感字段（如 { config: { apiKey: "xxx" } }）
+// 改为递归深拷贝 + 已知敏感字段掩码
+const SENSITIVE_FIELDS = ['apikey', 'api_key', 'password', 'token', 'secret', 'secretkey', 'access_token', 'refresh_token'];
+
 function sanitizeForAudit(params: unknown): unknown {
-  // 移除敏感字段（API keys, passwords）
+  if (Array.isArray(params)) {
+    return params.map((item) => sanitizeForAudit(item));
+  }
   if (typeof params === 'object' && params !== null) {
-    const sanitized = { ...params };
-    for (const key of Object.keys(sanitized)) {
-      if (key.toLowerCase().includes('key') || key.toLowerCase().includes('password') || key.toLowerCase().includes('token')) {
-        (sanitized as Record<string, unknown>)[key] = '[REDACTED]';
+    const sanitized: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(params)) {
+      const keyLower = key.toLowerCase();
+      if (SENSITIVE_FIELDS.some((sf) => keyLower.includes(sf))) {
+        sanitized[key] = '[REDACTED]';
+      } else {
+        sanitized[key] = sanitizeForAudit(value); // 递归处理嵌套对象
       }
     }
     return sanitized;
@@ -954,11 +979,15 @@ export async function GET(req: NextRequest) {
     redis.get(`usage:tool_calls:${tenantId}:${monthKey}`),
   ]);
 
+  // P0 修复：禁止伪造计费数据。60/40 拆分是臆造比例，会导致计费纠纷。
+  // TODO: 正确方案是在 LLM 调用链路中分别追踪 input/output token，
+  // 并通过独立 Redis key 存储（如 usage:input_tokens:{tenantId}:{monthKey}）。
+  // 在精确追踪上线前，返回 null 并标注"数据不可用"。
   return NextResponse.json({
     period: monthKey,
     usage: {
-      inputTokens: Math.floor(Number(tokens) * 0.6), // 实际应分别存储
-      outputTokens: Math.floor(Number(tokens) * 0.4),
+      inputTokens: null, // 数据不可用：未实现独立追踪
+      outputTokens: null, // 数据不可用：未实现独立追踪
       apiCalls: Number(apiCalls ?? 0),
       toolCalls: Number(toolCalls ?? 0),
     },

@@ -171,11 +171,27 @@ BM25 是一种经典的关键词检索算法，比向量检索更擅长精确匹
 ```typescript
 // packages/core/src/memory/bm25.ts
 
+/** 中英文停用词集合——过滤无意义的高频词，替代 length>1 粗暴过滤 */
+const STOP_WORDS = new Set([
+  // 英文停用词
+  'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+  'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+  'should', 'may', 'might', 'can', 'shall', 'to', 'of', 'in', 'for',
+  'on', 'with', 'at', 'by', 'from', 'as', 'into', 'through', 'during',
+  'and', 'but', 'or', 'not', 'no', 'it', 'its', 'this', 'that', 'i',
+  'you', 'he', 'she', 'we', 'they', 'my', 'your', 'his', 'her', 'our',
+  // 中文停用词
+  '的', '了', '在', '是', '我', '有', '和', '就', '不', '人', '都',
+  '一', '个', '上', '也', '到', '要', '你', '会', '着', '没有', '看',
+  '好', '自己', '这', '他', '她', '它', '们', '么', '那', '被', '让',
+]);
+
 /**
  * BM25 轻量索引 —— 零依赖、纯内存
  *
  * 工程选择：
  * - 中文按字切分（bigram），英文按空格切词
+ * - 不过滤单字中文（停用词表替代 length>1 粗暴过滤）
  * - 标准 BM25 公式：IDF * (tf * (k1+1)) / (tf + k1*(1-b+b*dl/avgdl))
  * - k1=1.5, b=0.75 是经广泛验证的默认值
  * - 适合<10万条记忆条目，超过该规模请换 Elasticsearch 或 Qdrant BM25
@@ -254,14 +270,19 @@ export class BM25SimpleIndex implements BM25Index {
   }
 
   /**
-   * 中英文混合分词：中文按单字切，英文按空格按词切
-   * 在 stage 2 可以升级为更智能的 jieba/sentencepiece 分词
+   * 中英文混合分词：中文按字切，英文按空格按词切
+   *
+   * 注意：不过滤单字——中文单字有独立语义（'人'、'大'、'好'等），
+   * `t.length > 1` 会过滤掉所有单字中文导致检索遗漏。
+   * 生产环境推荐使用 jieba-wasm 或 @node-rs/jieba 做专门中文分词。
+   *
+   * 替代 .filter(t => t.length > 1) 的方案：加入停用词过滤
    */
   private tokenize(text: string): string[] {
     return text.toLowerCase()
       .replace(/[^\w\u4e00-\u9fff\s]/g, ' ')
       .split(/\s+/)
-      .filter(t => t.length > 1);
+      .filter(t => t.length > 0 && !STOP_WORDS.has(t));
   }
 
   private updateAvgLength(): void {
@@ -740,7 +761,11 @@ export class MemoryManager {
 
     for (const result of results.slice(0, options?.limit ?? 5)) {
       const text = `[Memory] ${result.entry.content}`;
-      const estimatedTokens = Math.ceil(text.length / 3);
+      // 中文 token 估算：中文字符 * 0.6 + 其他字符 * 0.25
+      // 比 length/3 更准确（中文每个字约 1.2-1.5 token，英文每词约 0.75 token）
+      const chineseChars = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+      const otherChars = text.length - chineseChars;
+      const estimatedTokens = Math.ceil(chineseChars * 0.6 + otherChars * 0.25);
 
       if (currentTokens + estimatedTokens > maxTokens) break;
       currentTokens += estimatedTokens;
@@ -808,8 +833,10 @@ async *run(userMessage: string, context: AgentContext): AsyncGenerator<AgentEven
     });
 
     if (memoryContext) {
-      // 作为 system 消息注入（在 systemPrompt 之后，对话历史之前）
-      context.messages.unshift({
+      // 注入到 system prompt 之后、对话历史之前（index=1，避免覆盖 system prompt 优先级）
+      // 用 splice(1, 0, ...) 而非 unshift —— unshift 会把 memory 推到最前面（index=0），
+      // 可能覆盖 system prompt 的关键指令（如角色定义）
+      context.messages.splice(1, 0, {
         role: 'system',
         content: `[User Memory Context]\n${memoryContext}`,
       } as LLMMessage);
@@ -946,12 +973,13 @@ export class RecursiveCharacterSplitter {
     return this.recursiveSplit(text, docId, 0);
   }
 
-  private recursiveSplit(text: string, docId: string, startIndex: number): Chunk[] {
+  private recursiveSplit(text: string, docId: string, baseOffset: number = 0): Chunk[] {
+    // 小文本：直接返回 0-index chunk，startOffset = baseOffset
     if (text.length <= this.chunkSize) {
       return [{
-        id: `${docId}-${startIndex}`,
+        id: `${docId}-chunk-${baseOffset}`,
         content: text,
-        metadata: { docId, chunkIndex: startIndex, startOffset: 0, endOffset: text.length },
+        metadata: { docId, chunkIndex: 0, startOffset: baseOffset, endOffset: baseOffset + text.length },
       }];
     }
 

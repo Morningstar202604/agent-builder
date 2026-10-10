@@ -172,26 +172,29 @@ Playground 必须让用户在发送前就知道"这次对话大概花多少钱"�
 
 /**
  * 浏览器端 tokenizer。
- * 
+ *
  * 为什么用 WASM 版 tiktoken 而不是近似估算（字符数 / 4）：
  * - 中文每个字 1-3 token，英文每词 1-1.5 token，简单除以 4 误差 ±40%
  * - tiktoken WASM（@dqbd/tiktoken/lite）在浏览器端直接运行，精度 100%
  * - 对 playground 来说，精确数字决定用户是否愿意点击"发送"
  */
-import { get_encoding, TiktokenEncoding } from '@dqbd/tiktoken/lite-init';
+// 注意：@dqbd/tiktoken/lite-init 路径不存在，正确路径是 @dqbd/tiktoken/lite
+import { get_encoding, TiktokenEncoding } from '@dqbd/tiktoken/lite';
 import cl100k_base from '@dqbd/tiktoken/encoders/cl100k_base.json';
 import o200k_base from '@dqbd/tiktoken/encoders/o200k_base.json';
 
 type EncodingName = 'cl100k_base' | 'o200k_base' | 'p50k_base';
 
 // 模型 → 编码映射
+// 注意：Claude 模型不存在 claude-opus-4。对于 Claude，需要使用 @anthropic-ai/tokenizer
+// 或在服务端做精确计算（浏览器端用 cl100k_base 做近似估算，误差约 10-20%）
 const MODEL_TO_ENCODING: Record<string, EncodingName> = {
   'gpt-4o': 'o200k_base',
   'gpt-4o-mini': 'o200k_base',
   'gpt-4': 'cl100k_base',
   'gpt-3.5-turbo': 'cl100k_base',
-  'claude-opus-4': 'cl100k_base',  // Claude 用 GPT tokenizer 近似
-  'claude-sonnet-4': 'cl100k_base',
+  'claude-3-5-sonnet-20241022': 'cl100k_base',  // 浏览器用 cl100k 近似，精确值需 @anthropic-ai/tokenizer
+  'claude-3-opus-20240229': 'cl100k_base',       // 同上——cl100k_base 是粗略近似
 };
 
 let encoderCache: Map<EncodingName, any> = new Map();
@@ -250,7 +253,7 @@ export async function countTokens(
 
 // apps/web/src/hooks/useCostEstimate.ts
 
-import { useDeferredValue, useMemo } from 'react';
+import { useDeferredValue, useMemo, useState, useEffect } from 'react';
 import { countTokens } from '@/lib/tokenizer/tokenizer';
 
 interface TokenPrice {
@@ -262,8 +265,8 @@ interface TokenPrice {
 const MODEL_PRICING: Record<string, TokenPrice> = {
   'gpt-4o':        { input: 0.005, output: 0.015, cachedInput: 0.0025 },
   'gpt-4o-mini':   { input: 0.00015, output: 0.0006, cachedInput: 0.000075 },
-  'claude-sonnet-4': { input: 0.003, output: 0.015, cachedInput: 0.0003 },
-  'claude-opus-4':   { input: 0.015, output: 0.075, cachedInput: 0.0015 },
+  'claude-3-5-sonnet-20241022': { input: 0.003, output: 0.015, cachedInput: 0.0003 },
+  'claude-3-opus-20240229':    { input: 0.015, output: 0.075, cachedInput: 0.0015 },
 };
 
 export function useCostEstimate(
@@ -273,21 +276,44 @@ export function useCostEstimate(
 ) {
   const deferredMessages = useDeferredValue(messages);
 
-  return useMemo(async () => {
-    const inputTokens = await countTokens(deferredMessages, model);
+  // 同步估算初始值（字符数 / 4 的粗略估算，保证首帧有数据）
+  const initialEstimate = useMemo(() => {
+    const totalChars = deferredMessages.reduce((sum, m) => sum + m.content.length, 0);
+    const approxTokens = Math.ceil(totalChars / 4);
     const pricing = MODEL_PRICING[model] ?? { input: 0, output: 0 };
-
-    const inputCost = (inputTokens / 1000) * pricing.input;
+    const inputCost = (approxTokens / 1000) * pricing.input;
     const outputCost = (estimatedOutputTokens / 1000) * pricing.output;
-
     return {
-      inputTokens,
+      inputTokens: approxTokens,
       estimatedOutputTokens,
-      totalTokens: inputTokens + estimatedOutputTokens,
+      totalTokens: approxTokens + estimatedOutputTokens,
       estimatedCost: inputCost + outputCost,
       formattedCost: `$${(inputCost + outputCost).toFixed(4)}`,
     };
   }, [deferredMessages, model, estimatedOutputTokens]);
+
+  // 异步精确值：先用同步估算值，再用 countTokens 刷新精确值
+  const [estimate, setEstimate] = useState(initialEstimate);
+
+  useEffect(() => {
+    let cancelled = false;
+    countTokens(deferredMessages, model).then((inputTokens) => {
+      if (cancelled) return;
+      const pricing = MODEL_PRICING[model] ?? { input: 0, output: 0 };
+      const inputCost = (inputTokens / 1000) * pricing.input;
+      const outputCost = (estimatedOutputTokens / 1000) * pricing.output;
+      setEstimate({
+        inputTokens,
+        estimatedOutputTokens,
+        totalTokens: inputTokens + estimatedOutputTokens,
+        estimatedCost: inputCost + outputCost,
+        formattedCost: `$${(inputCost + outputCost).toFixed(4)}`,
+      });
+    });
+    return () => { cancelled = true; };
+  }, [deferredMessages, model, estimatedOutputTokens]);
+
+  return estimate;
 }
 ```
 
@@ -311,8 +337,6 @@ export const TokenCounter: React.FC<{
   maxContextTokens: number;
 }> = ({ messages, model, maxContextTokens }) => {
   const estimate = useCostEstimate(messages, model);
-
-  if (!estimate) return <div className="text-xs text-gray-500">计算中…</div>;
 
   const exceedsLimit = estimate.inputTokens > maxContextTokens;
 
@@ -758,6 +782,9 @@ export interface LLMProvider {
   /** 是否支持 Prompt Caching */
   readonly supportsPromptCaching: boolean;
 
+  /** 输入 token 单价（$/token），用于 cost-aware 路由 */
+  readonly costPerInputToken: number;
+
   /** 单次调用（非流式） */
   complete(
     request: UnifiedRequest,
@@ -984,6 +1011,52 @@ export class ModelRouter {
     if (stats.length > 100) stats.shift();
     this.latencyStats.set(model, stats);
   }
+
+  /**
+   * 根据模型名称获取 Provider（FallbackExecutor 需要）。
+   */
+  getProvider(model: string): LLMProvider {
+    const provider = this.providers.get(model);
+    if (!provider) {
+      throw new ModelNotFoundError(model);
+    }
+    return provider;
+  }
+
+  /**
+   * 获取同一厂商的备选模型（FallbackExecutor 需要）。
+   *
+   * 例如 gpt-4o 失败 → 尝试 gpt-4o-mini（同属 openai provider）。
+   */
+  getBackupInProvider(providerName: string, excludeModel: string): LLMProvider | undefined {
+    for (const provider of this.providers.values()) {
+      if (provider.provider === providerName && provider.model !== excludeModel) {
+        return provider;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * 获取跨厂商兜底模型（FallbackExecutor 需要）。
+   *
+   * 当同一厂商无可用备选时，返回其他厂商的任意可用模型。
+   */
+  getCrossProviderFallback(excludeModel: string): LLMProvider | undefined {
+    for (const provider of this.providers.values()) {
+      if (provider.model !== excludeModel) {
+        return provider;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * 获取已注册的所有 Provider（辅助方法）。
+   */
+  getAllProviders(): LLMProvider[] {
+    return Array.from(this.providers.values());
+  }
 }
 
 type RoutingStrategy = 'round-robin' | 'cost-aware' | 'latency-aware';
@@ -1090,16 +1163,30 @@ export class FallbackExecutor {
 
   /**
    * 判断一个错误是否值得触发 fallback。
+   *
+   * 注意：不使用 instanceof 检查——外部 SDK 抛出的错误不可能是自定义错误的实例。
+   * 改为检查 error.status 或 error.code 以兼容任何来源的错误对象。
    */
   private shouldFallback(error: unknown, provider: LLMProvider): boolean {
-    if (error instanceof RateLimitError) return true;
-    if (error instanceof ServiceUnavailableError) return true;
-    if (error instanceof TimeoutError) return true;
-    if (error instanceof ServerError && error.statusCode >= 500) return true;
+    const err = error as any;
+
+    // 速率限制（429）→ 切换
+    if (err?.status === 429 || err?.statusCode === 429 || err?.code === 'RATE_LIMITED') return true;
+
+    // 服务不可用（503）→ 切换
+    if (err?.status === 503 || err?.statusCode === 503) return true;
+
+    // 超时 → 切换
+    if (err?.name === 'TimeoutError' || err?.code === 'TIMEOUT' || err?.name === 'AbortError') return true;
+
+    // 服务端错误（5xx）→ 切换
+    const status = err?.status ?? err?.statusCode;
+    if (typeof status === 'number' && status >= 500) return true;
 
     // 客户端错误（400、401、403）不应该 fallback——切换也救不了
-    if (error instanceof ClientError) return false;
+    if (typeof status === 'number' && status >= 400 && status < 500 && status !== 429) return false;
 
+    // 未知错误：保守起见不 fallback
     return false;
   }
 }
@@ -1423,8 +1510,13 @@ export class TokenBucketRateLimiter {
 
     // 使用 Redis + Lua 脚本保证原子性
     // Key 结构：
-    // {key}:rpm — 已用请求数（按秒重置）
-    // {key}:tokens — 已用 input tokens（按秒重置）
+    // {key}:rpm — 已用请求数（按窗口重置）
+    // {key}:tokens — 已用 input tokens（按窗口重置）
+    //
+    // 注意：下面使用 INCR + 检查返回值 而非 GET-then-INCR。
+    // GET-then-INCR 非原子：并发时多个请求同时 GET 到相同值都会通过检查，
+    // 导致实际计数超限。INCR 后检查返回值为原子操作（Lua 脚本在 Redis 中
+    // 单线程执行），INCR 返回的是增加后的实际值，超限即拒绝。
     const luaScript = `
       local rpm_key = KEYS[1]
       local tokens_key = KEYS[2]
@@ -1436,27 +1528,33 @@ export class TokenBucketRateLimiter {
 
       -- 计算窗口起始时间（60 秒窗口）
       local window = math.floor(now_ts / 60) * 60
+      local rpm_window_key = rpm_key .. ':' .. window
+      local tokens_window_key = tokens_key .. ':' .. window
 
-      -- 检查 RPM
-      local current_rpm = redis.call('GET', rpm_key .. ':' .. window)
-      if current_rpm and tonumber(current_rpm) >= rpm_limit then
-        return {0, 0, rpm_limit - tonumber(current_rpm)}
+      -- 原子 INCR RPM 并立即检查
+      local new_rpm = redis.call('INCR', rpm_window_key)
+      if new_rpm == 1 then
+        -- 首次创建 key，设置 TTL
+        redis.call('EXPIRE', rpm_window_key, ttl)
+      end
+      if new_rpm > rpm_limit then
+        -- 超限：回退计数（可选，避免长期统计偏移）
+        redis.call('DECR', rpm_window_key)
+        return {0, 0, 0} -- RPM 超限
       end
 
-      -- 检查 Token 配额
-      local current_tokens = redis.call('GET', tokens_key .. ':' .. window)
-      if current_tokens and tonumber(current_tokens) + requested_tokens > tokens_limit then
-        local remaining = tokens_limit - tonumber(current_tokens)
-        return {1, remaining, 0} --  tokens 维度失败
-      end
-
-      -- 通过：增加计数
-      redis.call('INCR', rpm_key .. ':' .. window)
-      redis.call('EXPIRE', rpm_key .. ':' .. window, ttl)
-
+      -- 原子 ADD Tokens 并立即检查
       if requested_tokens > 0 then
-        redis.call('INCRBY', tokens_key .. ':' .. window, requested_tokens)
-        redis.call('EXPIRE', tokens_key .. ':' .. window, ttl)
+        local new_tokens = redis.call('INCRBY', tokens_window_key, requested_tokens)
+        if new_tokens == requested_tokens then
+          -- 首次创建 key，设置 TTL
+          redis.call('EXPIRE', tokens_window_key, ttl)
+        end
+        if new_tokens > tokens_limit then
+          -- 超限：回退计数
+          redis.call('DECRBY', tokens_window_key, requested_tokens)
+          return {1, 0, 0} -- Token 超限
+        end
       end
 
       return {2, 0, 0} -- 成功
@@ -1597,7 +1695,14 @@ export class ConcurrencyLimiter {
     }
 
     // 续期机制：如果请求快要超了，自动延长 TTL
+    // 注意：回调中必须检查 key 是否还存在——外部可能已删除（如 release 被调用）
     const renewInterval = setInterval(async () => {
+      const exists = await this.redis.exists(key);
+      if (!exists) {
+        // key 已被外部删除（release 调用等），停止续期
+        clearInterval(renewInterval);
+        return;
+      }
       const ttl = await this.redis.ttl(key);
       if (ttl < 10) {
         await this.redis.expire(key, 30);

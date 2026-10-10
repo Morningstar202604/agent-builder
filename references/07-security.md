@@ -58,8 +58,10 @@ export interface InjectionScanResult {
   reason?: string;
   /** 0-100 注入嫌疑评分 */
   score: number;
-  /** 哪个检测规则命中 */
+  /** 最后命中的检测规则 ID（兼容旧接口） */
   triggeredRule?: string;
+  /** 所有命中的检测规则 ID 列表（不丢失触发信息） */
+  triggeredRules?: string[];
 }
 
 /**
@@ -134,7 +136,7 @@ const INJECTION_THRESHOLD = 60;
 
 export function scanForInjection(input: string): InjectionScanResult {
   let totalScore = 0;
-  let triggeredRule: string | undefined;
+  const triggeredRules: string[] = [];
 
   // === 编码绕过检测 ===
   // 先把零宽字符、变形空格、过度 Unicode 归一化
@@ -143,13 +145,14 @@ export function scanForInjection(input: string): InjectionScanResult {
   for (const rule of INJECTION_PATTERNS) {
     if (rule.pattern.test(normalized)) {
       totalScore += rule.weight;
-      triggeredRule = rule.id;
+      triggeredRules.push(rule.id);
       // 单条就超过阈值，直接判定
       if (totalScore >= INJECTION_THRESHOLD) {
         return {
           isMalicious: true,
           score: totalScore,
-          triggeredRule,
+          triggeredRule: triggeredRules.join(','),
+          triggeredRules,
           reason: rule.description,
         };
       }
@@ -159,7 +162,8 @@ export function scanForInjection(input: string): InjectionScanResult {
   return {
     isMalicious: totalScore >= INJECTION_THRESHOLD,
     score: totalScore,
-    triggeredRule,
+    triggeredRule: triggeredRules.join(','),
+    triggeredRules,
   };
 }
 
@@ -170,7 +174,7 @@ export function scanForInjection(input: string): InjectionScanResult {
 function normalizeSuspiciousChars(input: string): string {
   return input
     // 零宽字符家族
-    .replace(/[​-‍​‍‍]/g, '')
+    .replace(/[​-‍﻿⁠]/g, '')  // 零宽字符: ZWSP/ZWNJ/ZWJ/BOM/WordJoiner
     // 全角空格
     .replace(/[\u00A0\u3000]/g, ' ')
     // 同形字（部分）：西里尔字母 a → 拉丁字母 a
@@ -565,7 +569,16 @@ profile agentcore-sandbox flags=(attach_deleted,mediate_deleted) {
 }
 `;
 
-// Step 3c: 使用这个 profile 启动沙箱容器
+// Step 3c: 将 seccomp profile 序列化为 JSON 文件并挂载到 Docker
+export function writeSeccompProfile(outputPath: string): void {
+  const fs = require('fs') as typeof import('fs');
+  fs.writeFileSync(outputPath, JSON.stringify(DEFAULT_SECCOMP_PROFILE, null, 2), 'utf-8');
+}
+
+// Step 3d: 使用这个 profile 启动沙箱容器
+// 用法：先调用 writeSeccompProfile('/path/to/seccomp.json') 写入文件，
+// 然后在 docker run 时通过 --security-opt seccomp=/path/to/seccomp.json 加载。
+// 示例：writeSeccompProfile('server/seccomp-profile.json')
 export function buildSandboxDockerArgs(
   seccompProfilePath: string,
   memoryLimit: string = '512m',
@@ -660,11 +673,17 @@ export async function createTenantWorkspace(
 /**
  * 路径遍历防护：确认目标路径在 workspace 内。
  * 攻击可能通过 ../../etc/passwd 访问沙箱外的文件。
+ * 
+ * 修复说明：原代码使用 resolvedBase + '/' 做前缀检查，在 Windows 上
+ * 路径分隔符是 '\' 而非 '/'，会导致检查失败或误报。
+ * 改为使用 path.sep 适配不同平台的路径分隔符。
  */
 export function isPathWithinWorkspace(targetPath: string, workspacePath: string): boolean {
   const resolved = resolve(targetPath);
   const resolvedBase = resolve(workspacePath);
-  return resolved.startsWith(resolvedBase + '/') || resolved === resolvedBase;
+  // 使用 path.sep 兼容 Windows(\) 和 POSIX(/)
+  const sep = path.sep;
+  return resolved.startsWith(resolvedBase + sep) || resolved === resolvedBase;
 }
 
 /**
@@ -747,13 +766,26 @@ export function promptInjectionGuard(
 
 /**
  * 工具执行安全门 —— 在工具执行层调用。
- * Express 中间件只负责拦截外部 HTTP 请求，
- * 内部工具调用通过这个门检。
+ * 提供独立的 gate 检查函数，供路由 handler 和内部工具调用方使用。
+ */
+export function toolExecutionGateCheck(
+  toolName: string,
+  args: any,
+  approvals: Set<string>,
+): ToolExecutionGateResult {
+  return checkToolExecutionGate(toolName, args, approvals);
+}
+
+/**
+ * 工具执行安全门中间件（独立函数）。
+ * 修复说明：原代码将 gate 检查逻辑挂在 response 对象上 (res as any).checkToolGate，
+ * 违反关注点 separation——middleware 只应传递上下文，不应在 response 上挂属性。
+ * 此处改为独立导出函数，供路由 handler 显式调用。
  */
 export function toolExecutionGateMiddleware() {
-  return (req: Request, res: Response, next: NextFunction): void => {
-    // 给 response 对象附上安全检查句柄
-    (res as any).checkToolGate = (toolName: string, args: any, approvals: Set<string>) => {
+  return (req: Request, _res: Response, next: NextFunction): void => {
+    // Middleware 仅负责传递上下文——将 check 函数挂到 request 而非 response 上
+    (req as any).toolGateCheck = (toolName: string, args: any, approvals: Set<string>) => {
       return checkToolExecutionGate(toolName, args, approvals);
     };
     next();

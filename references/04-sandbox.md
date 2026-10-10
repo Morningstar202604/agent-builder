@@ -95,6 +95,8 @@ export interface SandboxConfig {
   readOnlyMounts?: Array<{ host: string; container: string }>;
   /** 可写临时目录大小 */
   tmpfsSize?: string;
+  /** seccomp profile JSON 文件路径（必传，用于 --security-opt seccomp=path） */
+  seccompProfilePath?: string;
 }
 
 export interface SandboxFile {
@@ -149,6 +151,43 @@ import {
 } from './types';
 
 const DOCKER_IMAGE = 'agent-sandbox:latest';
+
+/**
+ * seccomp profile JSON 文件示例（docker/seccomp-profile.json）
+ * 通过 --security-opt seccomp=docker/seccomp-profile.json 加载。
+ * 
+ * Docker 不接受 --security-opt seccomp=default，必须提供完整的 profile 文件路径。
+ * 使用方式：
+ *   1. 将下面的 JSON 保存为 docker/seccomp-profile.json
+ *   2. 在 SandboxConfig 中设置 seccompProfilePath: '/absolute/path/to/seccomp-profile.json'
+ *   3. DockerSandbox 会在 buildDockerArgs 时附加 --security-opt seccomp=<path>
+ * 
+ * 生成方式：
+ *   docker run --rm --security-opt seccomp=unconfined <image> 运行目标程序，
+ *   strace -f -e trace=all ./program 2>&1 | grep '^syscall_name' | sort -u 收集实际使用的 syscall，
+ *   据此构建最小允许 profile（deny-all + 允许使用的 syscall）。
+ * 
+ * 最小示例（仅允许基本文件读写和网络，禁止 execve/ptrace/mount 等危险调用）：
+ * {
+ *   "defaultAction": "SCMP_ACT_ERRNO",
+ *   "architectures": ["SCMP_ARCH_X86_64"],
+ *   "syscalls": [
+ *     {
+ *       "names": ["read", "write", "open", "close", "fstat", "lseek", "mmap", "mprotect",
+ *                 "brk", "ioctl", "access", "pipe", "select", "sched_yield", "dup", "dup2",
+ *                 "nanosleep", "getpid", "getppid", "getuid", "getgid", "geteuid", "getegid",
+ *                 "sendmsg", "recvmsg", "socket", "connect", "accept", "bind", "listen",
+ *                 "clone", "exit", "exit_group", "rt_sigaction", "rt_sigprocmask", "futex",
+ *                 "set_robust_list", "pread64", "pwrite64", "readv", "writev", "stat", "lstat",
+ *                 "poll", "fcntl", "flock", "fsync", "fdatasync", "truncate", "ftruncate",
+ *                 "getcwd", "rename", "mkdir", "unlink", "readlink", "getdents", "chmod",
+ *                 "chown", "getrlimit", "sysinfo", "times", "gettimeofday", "clock_gettime",
+ *                 "epoll_wait", "epoll_ctl", "tgkill", "wait4", "uname", "fcntl64"],
+ *       "action": "SCMP_ACT_ALLOW"
+ *     }
+ *   ]
+ * }
+ */
 
 /**
  * Docker 容器沙箱实现
@@ -214,7 +253,7 @@ export class DockerSandbox {
 
     yield { type: 'created', data: { sandboxId: this.id }, timestamp: Date.now() };
 
-    const dockerArgs = this.buildDockerArgs(command);
+    const dockerArgs = this.buildDockerArgs(command, this.config.seccompProfilePath);
 
     yield { type: 'started', data: { command }, timestamp: Date.now() };
 
@@ -302,8 +341,10 @@ export class DockerSandbox {
   /**
    * 构建 docker run 参数
    * 每一层都在堵住一种攻击路径
+   * 
+   * @param seccompProfilePath seccomp profile JSON 文件绝对路径（必传）
    */
-  private buildDockerArgs(command: string): string[] {
+  private buildDockerArgs(command: string, seccompProfilePath?: string): string[] {
     const args = [
       'run',
       '--rm',                              // 容器退出后自动删除
@@ -317,7 +358,8 @@ export class DockerSandbox {
 
       // ═══ 安全约束 ═══
       '--security-opt', 'no-new-privileges:true',   // 禁止提权（防止 setuid 攻击）
-      '--security-opt', 'seccomp=default',          // seccomp 系统调用过滤
+      // seccomp 系统调用过滤：必须从文件加载完整 profile（seccomp=default 不是有效 Docker 值）
+      '--security-opt', `seccomp=${seccompProfilePath}`,
       '--cap-drop', 'ALL',                          // 丢弃所有 Linux capabilities
       '--read-only',                                // 根文件系统只读
 
@@ -346,13 +388,28 @@ export class DockerSandbox {
 
   /**
    * 网络白名单 enforcement —— 修复「whitelist 形同虚设」
-   * Docker bridge 允许所有出站流量，iptables 是实际执行层。
-   * 每条 iptables 规则：默认 DROP 出站 → 仅允许白名单目标
+   * Docker bridge 允许所有出站流量，仅设 WHITELIST_HOSTS 环境变量不等于实际生效。
+   * 正确做法：Dockerfile 内注入 iptables 规则脚本作为 ENTRYPOINT，
+   * 在容器启动后立即执行，DROP 所有出站流量后仅放行白名单 IP。
+   * 
+   * 替代方案（如果无法修改 Dockerfile）：
+   *   docker run --network none 完全断网 + 使用 --add-host 将白名单域名预解析并路由到宿主机代理
+   *   宿主机上运行带 ACL 的 HTTP 代理（如 Squid），容器通过代理访问外部
    */
   private enforceWhitelist(): string[] {
     if (!this.config.networkWhitelist?.length) return [];
-    // 执行脚本在容器内运行（通过 entrypoint 注入的 setup-iptables.sh）
-    // 这里返回告诉外层去附加 --env WHITELIST_HOSTS
+    // 方案 A（推荐）：通过 ENTRYPOINT 脚本注入 iptables 规则
+    // Dockerfile 中添加：COPY setup-iptables.sh /usr/local/bin/ && ENTRYPOINT ["/usr/local/bin/setup-iptables.sh"]
+    // setup-iptables.sh 内容示例：
+    //   #!/bin/sh
+    //   WHITELIST_HOSTS="$1"
+    //   iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+    //   for host in $(echo "$WHITELIST_HOSTS" | tr ',' ' '); do
+    //     ip=$(getent hosts "$host" | awk '{print $1}' | head -1)
+    //     [ -n "$ip" ] && iptables -A OUTPUT -d "$ip" -j ACCEPT
+    //   done
+    //   iptables -A OUTPUT -j DROP
+    //   exec "$@"
     return ['--env', `WHITELIST_HOSTS=${this.config.networkWhitelist.join(',')}`];
   }
 
@@ -442,7 +499,7 @@ WORKDIR /sandbox
 |------|-------------|-----------|---------|
 | 资源限制 | `--memory`, `--cpus`, `--pids-limit` | fork bomb, OOM, CPU 耗尽 | 宿主机资源耗尽 |
 | Capability 丢弃 | `--cap-drop ALL` | 利用 NET_RAW/SYS_ADMIN 等 capability 做越权 | 容器逃逸、网络攻击 |
-| Seccomp 过滤 | `--seccomp=default` | 调用危险系统调用（如 `ptrace`, `kexec_load`） | 容器逃逸、提权 |
+| Seccomp 过滤 | `--seccomp=/path/to/profile.json`（非 `default`） | 调用危险系统调用（如 `ptrace`, `kexec_load`） | 容器逃逸、提权 |
 | 只读文件系统 | `--read-only` | 篡改系统文件、植入后门 | 持久化攻击 |
 | 禁止提权 | `--no-new-privileges` | 通过 setuid 提升权限 | 提权到 root |
 | 网络隔离 | `--network none` | 数据外泄、挖矿、端口扫描 | 网络攻击 |
@@ -732,6 +789,7 @@ export function createVisualizationTool(manager: SandboxManager): RegisteredTool
       name: 'create_visualization',
       description: 'Create interactive visualization app',
       category: 'system',
+      requiresConfirmation: true,  // 涉及启动网络服务，需要用户确认
       tags: ['visualization', 'streamlit', 'gradio', 'data'],
     },
     async execute(args: {
@@ -743,8 +801,8 @@ export function createVisualizationTool(manager: SandboxManager): RegisteredTool
       const fileName = `app.py`;
 
       const command = args.framework === 'streamlit'
-        ? `streamlit run /sandbox/app.py --server.port ${port} --server.headless true --server.enableCORS false &`
-        : `python3 /sandbox/app.py &`;
+        ? `nohup streamlit run /sandbox/app.py --server.port ${port} --server.headless true --server.enableCORS false > /sandbox/app.log 2>&1 & echo $!`
+        : `nohup python3 /sandbox/app.py > /sandbox/app.log 2>&1 & echo $!`;
 
       const result = await manager.run(
         [{ path: fileName, content: args.code }],
@@ -1191,8 +1249,8 @@ export class VisualizationManager {
     const fileName = 'app.py';
 
     const command = params.framework === 'streamlit'
-      ? `streamlit run /sandbox/${fileName} --server.port ${port} --server.headless true --server.enableCORS false --server.enableXsrfProtection false &`
-      : `python3 /sandbox/${fileName} &`;
+      ? `nohup streamlit run /sandbox/${fileName} --server.port ${port} --server.headless true --server.enableCORS false --server.enableXsrfProtection false > /sandbox/app.log 2>&1 & echo $!`
+      : `nohup python3 /sandbox/${fileName} > /sandbox/app.log 2>&1 & echo $!`;
 
     const executionId = `viz-${id}`;
 
@@ -1471,7 +1529,7 @@ docker run
   --cpus 0.5                              # CPU 限制（0.5 = 50% 单核）
   --pids-limit 50                         # 最多 50 进程（防 fork bomb）
   --security-opt no-new-privileges:true   # 禁止提权
-  --security-opt seccomp=default          # 系统调用过滤
+  --security-opt seccomp=/path/to/seccomp-profile.json  # 必须从文件加载完整的 seccomp profile
   --cap-drop ALL                          # 丢弃所有 capabilities
   --read-only                             # 根文件系统只读
   --network none                          # 完全断网

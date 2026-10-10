@@ -2,7 +2,7 @@
 
 > 用途：产品上线前的强制检查清单，覆盖安全、性能、功能、可观测性、桌面端、合规、部署基础设施七大维度。每一项需逐项勾选确认，标注"完成"或"不适用（附原因）"。
 >
-> 对应 reference 21 个文件，31000+ 行。本章只列检查项，修复方案见各 reference 具体章节。
+> 对应 reference 24 个文件，31000+ 行。本章只列检查项，修复方案见各 reference 具体章节。
 
 ---
 
@@ -513,5 +513,8 @@
 | 19 | multi-tenancy.md | 租户隔离 + RBAC + 配额 + 审计 + 计费 | ~500 |
 | 20 | agent-marketplace.md | 发布 API + 安全扫描 + 评分 + 分成 | ~500 |
 | 21 | fault-recovery.md | 状态快照 + 断线重连 + 幂等 + 降级 + 超时 | ~500 |
+| 22 | guardrails-tracing.md | Guardrails + LangSmith 追踪 + 审计轨迹 | ~500 |
+| 23 | artifacts-computer-use.md | 沙箱文件产物 + Computer Use + 可视化输出 | ~500 |
+| 24 | product-layer.md | 产品设计 + 商业模式 + 迭代路线图 | ~500 |
 
 > 本清单覆盖 7 大维度共 **75 项**检查点。每项标注对应 reference 章节，修复时直接定位到具体文件。

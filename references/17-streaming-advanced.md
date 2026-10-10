@@ -92,6 +92,8 @@ export class StreamLatencyTracker {
   private lastTokenTime = 0;
   private tokenCount = 0;
   private tokenTimestamps: number[] = [];
+  /** RTT 估算值（ms）—— 可通过 TCP handshake 或首次 ping 测量 */
+  rttEstimate = 0;
 
   /** 请求开始 */
   markStart(): void {
@@ -122,9 +124,15 @@ export class StreamLatencyTracker {
       ? (this.lastTokenTime - this.firstTokenTime) / (this.tokenCount - 1)
       : 0;
 
-    // 网络开销估算：TTFT 中除去"服务端处理第一个 token 的时间"
-    // 假设服务端处理一个 token 的时间 ≈ TPOT * 0.1（首 token 通常更快）
-    const networkOverhead = Math.max(0, ttft - tpot * 2);
+    // 网络开销估算：TTFT 减去首 token 的实际计算延迟
+    // firstTokenLatency = 收到首个 chunk 的时间 - 请求发送到服务端的时间（即 RTT + 首个 token 推理时间）
+    // 更精确公式：networkOverhead = TTFT - firstTokenLatency
+    // 其中 firstTokenLatency 需要从服务端 timestamp 计算（服务端返回首 chunk 的生成时间戳）
+    // 降级估算（无服务端首 chunk 时间戳时）：用 RTT + 计算时间分离
+    const firstTokenLatency = this.tokenCount > 0 && this.rttEstimate > 0
+      ? this.rttEstimate + (tpot * 0.1)  // RTT + 首 token 推理（约为 TPOT 的 10%）
+      : tpot;  // 无法测量时退化为 TPOT
+    const networkOverhead = Math.max(0, ttft - firstTokenLatency);
 
     return {
       ttft,
@@ -374,10 +382,9 @@ export interface ReconnectState {
  * - 缓存有内存上限（如 256MB），超出后 LRU 淘汰
  */
 export class ReconnectBuffer {
-  private buffer: ReconnectState | null = null;
+  private buffers = new Map<string, ReconnectState>();
   private maxAgeMs: number;
-  private maxBufferSize: number;   // 最大 chunk 数量
-  private currentSize = 0;
+  private maxBufferSize: number;   // 每个会话最大 chunk 数量
 
   constructor(options?: { maxAgeMs?: number; maxBufferSize?: number }) {
     this.maxAgeMs = options?.maxAgeMs ?? 60_000;
@@ -386,42 +393,42 @@ export class ReconnectBuffer {
 
   /** 启动一个流的缓存 */
   init(sessionId: string): void {
-    this.buffer = {
+    this.buffers.set(sessionId, {
       sessionId,
       lastEventId: 0,
       buffer: [],
       timestamp: Date.now(),
-    };
-    this.currentSize = 0;
+    });
   }
 
   /** 缓存一个 chunk */
-  append(chunk: { event: string; data: string }): void {
-    if (!this.buffer) return;
-    if (this.currentSize >= this.maxBufferSize) return; // 缓存满了，放弃
+  append(sessionId: string, chunk: { event: string; data: string }): void {
+    const state = this.buffers.get(sessionId);
+    if (!state) return;
+    if (state.buffer.length >= this.maxBufferSize) return; // 缓存满了，放弃
 
-    this.buffer.buffer.push({
-      id: this.buffer.lastEventId++,
+    state.buffer.push({
+      id: state.lastEventId++,
       event: chunk.event,
       data: chunk.data,
     });
-    this.currentSize++;
   }
 
   /**
    * 重连请求——获取从 lastReceivedEventId 之后的所有 chunk
    * 后端调用此方法在 SSE 重连时补发
    */
-  getChunksAfter(lastReceivedEventId: number): Array<{ event: string; data: string }> {
-    if (!this.buffer) return [];
+  getChunksAfter(sessionId: string, lastReceivedEventId: number): Array<{ event: string; data: string }> {
+    const state = this.buffers.get(sessionId);
+    if (!state) return [];
 
     // 缓存过期
-    if (Date.now() - this.buffer.timestamp > this.maxAgeMs) {
-      this.buffer = null;
+    if (Date.now() - state.timestamp > this.maxAgeMs) {
+      this.buffers.delete(sessionId);
       return [];
     }
 
-    const chunks = this.buffer.buffer
+    const chunks = state.buffer
       .filter(c => c.id > lastReceivedEventId)
       .map(c => ({ event: c.event, data: c.data }));
 
@@ -429,16 +436,19 @@ export class ReconnectBuffer {
   }
 
   /** 清理已确认的 chunk（客户端确认收到后，不需要保留） */
-  acknowledge(upToId: number): void {
-    if (!this.buffer) return;
-    this.buffer.buffer = this.buffer.buffer.filter(c => c.id > upToId);
-    this.currentSize = this.buffer.buffer.length;
+  acknowledge(sessionId: string, upToId: number): void {
+    const state = this.buffers.get(sessionId);
+    if (!state) return;
+    state.buffer = state.buffer.filter(c => c.id > upToId);
   }
 
   /** 清理所有过期缓存 */
   prune(): void {
-    if (this.buffer && Date.now() - this.buffer.timestamp > this.maxAgeMs) {
-      this.buffer = null;
+    const now = Date.now();
+    for (const [sid, state] of this.buffers) {
+      if (now - state.timestamp > this.maxAgeMs) {
+        this.buffers.delete(sid);
+      }
     }
   }
 }
@@ -495,8 +505,10 @@ export class ResilientSSEClient {
       this.eventSource?.close();
 
       if (this.reconnectAttempts < this.maxReconnectAttempts) {
-        // 指数退避重连
-        const delay = this.baseDelayMs * Math.pow(2, this.reconnectAttempts);
+        // 指数退避重连 + 随机抖动（防止惊群效应）
+        const baseDelay = this.baseDelayMs * Math.pow(2, this.reconnectAttempts);
+        const jitter = baseDelay * (0.5 + Math.random() * 0.5); // 50%-100% 的 baseDelay
+        const delay = Math.floor(jitter);
         this.reconnectAttempts++;
         setTimeout(() => this.connect(url, handlers), delay);
       } else {
@@ -573,7 +585,7 @@ export class SSEHealthHeartbeat {
  * - `event: health` —— 模型服务端健康状态
  */
 export function formatSSEEvent(event: string, data: any): string {
-  const lines = [`event: event`];
+  const lines = [`event: ${event}`];
 
   if (typeof data === 'string') {
     lines.push(`data: ${data}`);

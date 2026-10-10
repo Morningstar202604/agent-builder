@@ -262,19 +262,35 @@ ${lastResult ? `最近完成的 Agent: ${lastResult.nodeId}，输出摘要: ${la
 
   private parseDecision(text: string): { nextNodeId: string; reason: string } | null {
     try {
-      // 从 LLM 输出中提取 JSON
-      const match = text.match(/\{[^}]+\}/);
-      if (!match) throw new Error('No JSON found in decision');
+      // 从 LLM 输出中提取 JSON（鲁棒方案：栈匹配大括号 + 尝试解析 + 优雅降级）
+      const json = this.extractJSON(text);
+      if (!json) throw new Error('No JSON found in decision');
 
-      const parsed = JSON.parse(match[0]);
+      const parsed = JSON.parse(json);
       if (parsed.next_node === null) return null;
       return { nextNodeId: parsed.next_node, reason: parsed.reason ?? '' };
     } catch {
-      // LLM 没返回合法 JSON —— 按第一个可用节点 fallback
+      // LLM 没返回合法 JSON —— 按第一个可用节点 fallback 作为最后手段
+      console.warn('[Supervisor] Failed to parse decision, using fallback');
       const available = this.edgesFromSupervisor[0];
       if (available) return { nextNodeId: available.to, reason: 'fallback: parse error' };
       return null;
     }
+  }
+
+  /** 从文本中提取第一个完整的 JSON 对象（支持嵌套大括号） */
+  private extractJSON(text: string): string | null {
+    const start = text.indexOf('{');
+    if (start === -1) return null;
+    let depth = 0;
+    for (let i = start; i < text.length; i++) {
+      if (text[i] === '{') depth++;
+      else if (text[i] === '}') {
+        depth--;
+        if (depth === 0) return text.slice(start, i + 1);
+      }
+    }
+    return null;
   }
 
   private getAllExitNodeIds(state: MultiAgentState): string[] {
@@ -368,7 +384,8 @@ export class Worker {
           sessionId: `multi-agent-${this.node.id}`,
           signal,
         });
-        fullOutput += `\n\n[Tool: ${tc.name} result]: ${JSON.stringify(result)}`;
+        const resultStr = JSON.stringify(result);
+        fullOutput += `\n\n[Tool: ${tc.name} result]: ${resultStr.length > 4000 ? resultStr.slice(0, 4000) + '...[truncated]' : resultStr}`;
       } catch {
         fullOutput += `\n\n[Tool: ${tc.name} error]: execution failed`;
       }
@@ -982,11 +999,17 @@ export async function POST(req: NextRequest) {
 
 ```typescript
 // 在 orchestrator 的 run 循环中添加：
-const visitCount = new Map<string, int>();
+const visitCount = new Map<string, number>();
 // 每次执行节点前检查：
 const count = visitCount.get(decision.nextNodeId) ?? 0;
 if (count >= 2) {
   // 此节点已执行 2 次，跳过
+  lastResult = {
+    nodeId: decision.nextNodeId,
+    output: `[Skipped: node ${decision.nextNodeId} already visited ${count} times]`,
+    status: 'completed',
+    completedAt: Date.now(),
+  };
   continue;
 }
 visitCount.set(decision.nextNodeId, count + 1);

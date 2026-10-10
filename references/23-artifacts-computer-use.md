@@ -594,13 +594,20 @@ class HTMLCompiler implements ArtifactCompiler {
     const dangerousTags = ['script', 'object', 'embed', 'iframe', 'form'];
     let result = raw;
     for (const tag of dangerousTags) {
+      // 大小写不敏感匹配 <SCRIPT>、< Script>、< script>、含空格 < SCRIPT>
       result = result.replace(
-        new RegExp(`<${tag}[^>]*>.*?</${tag}>`, 'gis'),
+        new RegExp(`<\\s*${tag}\\b[^>]*>[\\s\\S]*?<\\s*/\\s*${tag}\\s*>`, 'gis'),
         `<!-- ${tag} removed by sandbox -->`,
       );
     }
-    // 移除内联事件处理器
-    result = result.replace(/\son\w+\s*=\s*["'][^"']*["']/gi, '');
+    // 移除 <iframe> 含空格绕过变体 < IFRAME>、<if rame>
+    result = result.replace(/<(\s*\/?\s*if\s*r\s*a\s*m\s*e\s*)\b[^>]*>/gi, '<!-- iframe removed -->');
+    // 移除所有 on* 事件属性（大小写不敏感）——覆盖 <img onerror>、<svg onload>、<body onpageshow> 等
+    result = result.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+    // 移除 javascript: URI 伪协议
+    result = result.replace(/(?:href|src|action)\s*=\s*["']?\s*javascript\s*:[^"'\s>]*/gi, '');
+    // 移除 data: 内联 HTML 注入（可绕过 script 过滤）
+    result = result.replace(/data\s*:\s*text\/html[^"'\s>]*/gi, '');
     return result;
   }
 }
@@ -776,6 +783,18 @@ export function decideUpdateAction(
 
 /**
  * 计算文本差异率
+ * 
+ * 注意：当前实现是逐行对齐比较，无法正确处理行插入/删除场景。
+ * 例如：在文件开头插入一行，后续所有行号偏移，diffRatio 将接近 1.0。
+ * 建议在生产环境使用成熟的 diff 算法库：
+ * - jsdiff (https://github.com/kpdecker/jsdiff) —— Myers diff 算法实现，提供 diffLines/diffWords
+ * - @typescript-eslint/utils 中的 computeLiteralDiff 
+ * 替换示例：
+ *   import { diffLines } from 'jsdiff';
+ *   const changes = diffLines(a, b);
+ *   const changedCount = changes.filter(c => c.added || c.removed).length;
+ *   const totalCount = Math.max(a.split('\n').length, b.split('\n').length);
+ *   return totalCount === 0 ? 0 : changedCount / totalCount;
  */
 function computeDiffRatio(a: string, b: string): number {
   if (a === b) return 0;
@@ -1344,13 +1363,21 @@ export class ComputerUseExecutor {
 
   /**
    * 判断动作是否具有破坏性
+   * 
+   * 破坏性操作定义：click/type/key 可以改变系统状态或触发不可逆动作，
+   * 在 non-permissive 策略下需要 HITL（Human-in-the-loop）确认。
+   * scroll/move/wait 是只读操作，不在此列。
    */
   private isDestructiveAction(action: ComputerAction): boolean {
     if (action.type === 'scroll' || action.type === 'move' || action.type === 'wait') {
       return false;
     }
-    // click 和 type 通常不需要确认，除非在特定场景
-    return false;
+    if (action.type === 'screenshot' || action.type === 'screenshot_region') {
+      return false;
+    }
+    // click / type / key / double_click / triple_click / drag 均为破坏性动作
+    // 因为它们可以触发按钮点击、文本输入、快捷键、拖拽等改变系统状态的操作
+    return true;
   }
 
   private parseToolCalls(response: any): any[] {
@@ -1435,12 +1462,19 @@ export const SAFETY_POLICIES: Record<SafetyLevel, SafetyPolicy> = {
 };
 
 export class SafetyGuard {
-  private actionTimestamps: number[] = [];
+  /** 破坏性操作时间戳——用于频率限制（click/type/key 等） */
+  private destructiveTimestamps: number[] = [];
+  /** 全部操作时间戳——用于审计日志统计 */
+  private allTimestamps: number[] = [];
 
   constructor(private policy: SafetyPolicy) {}
 
   /**
    * 检查动作是否可通过安全策略
+   * 
+   * 修复说明：频率限制只针对破坏性操作（click/type/key/drag），
+   * screenshot/wait 等只读操作不计入频率限制桶，避免无害操作
+   * 挤占限额导致正常操作被拦截。
    */
   check(action: ComputerAction, context: { pageUrl?: string; pageText?: string }): SafetyCheckResult {
     // 检查动作类型是否被禁止
@@ -1457,15 +1491,24 @@ export class SafetyGuard {
       }
     }
 
-    // 检查频率限制
-    this.actionTimestamps = this.actionTimestamps.filter(
-      (t) => Date.now() - t < 60_000,
-    );
-    if (this.actionTimestamps.length >= this.policy.maxActionsPerMinute) {
-      return {
-        allowed: false,
-        reason: `Rate limit exceeded: ${this.policy.maxActionsPerMinute} actions/min`,
-      };
+    // 记录所有操作（用于审计）
+    this.allTimestamps.push(Date.now());
+    this.allTimestamps = this.allTimestamps.filter((t) => Date.now() - t < 60_000);
+
+    // 频率限制只针对破坏性操作——screenshot/wait/scroll 等无害操作不计数
+    const DESTRUCTIVE_TYPES = ['click', 'double_click', 'triple_click', 'type', 'key', 'drag'];
+    const isDestructive = DESTRUCTIVE_TYPES.includes(action.type);
+
+    if (isDestructive) {
+      this.destructiveTimestamps = this.destructiveTimestamps.filter(
+        (t) => Date.now() - t < 60_000,
+      );
+      if (this.destructiveTimestamps.length >= this.policy.maxActionsPerMinute) {
+        return {
+          allowed: false,
+          reason: `Rate limit exceeded: ${this.policy.maxActionsPerMinute} destructive actions/min`,
+        };
+      }
     }
 
     // 检查是否需要确认
@@ -1476,11 +1519,13 @@ export class SafetyGuard {
       });
 
       if (needsConfirmation) {
+        // 仅在实际放行时才推入破坏性时间戳
+        if (isDestructive) this.destructiveTimestamps.push(Date.now());
         return { allowed: true, requiresConfirmation: true, reason: 'Confirmation required' };
       }
     }
 
-    this.actionTimestamps.push(Date.now());
+    if (isDestructive) this.destructiveTimestamps.push(Date.now());
     return { allowed: true, requiresConfirmation: false };
   }
 }
@@ -1648,10 +1693,17 @@ export class PlaywrightComputerAdapter {
 
   /**
    * 获取当前页面的可访问性树（给 AI 决策参考）
+   * 
+   * 注意：Playwright 没有 ariaSnapshot() API（那是 @azure/agents-browser 独有的）。
+   * 方案 A：使用 page.accessibility.snapshot()（Chromium-only，返回 ARIA 树压缩格式）
+   * 方案 B：注入 aria 标注脚本 + 抓取 role/name 属性构建简化 A11y 树（跨浏览器）
+   * 此处采用方案 A 作为首选实现。
    */
   async getAccessibilityTree(): Promise<any> {
     if (!this.page) return null;
-    return this.page.locator('body').ariaSnapshot();
+    // page.accessibility.snapshot() 是 Playwright 内置的 Chromium ARIA snapshot API
+    // 返回格式：{ role: string, name: string, children: [...] } 递归树
+    return (this.page as any).accessibility.snapshot();
   }
 
   async dispose(): Promise<void> {
@@ -1929,23 +1981,23 @@ export class OutputFormatter {
 
   /**
    * 退出码计算
+   * 
+   * 修复说明：原代码中第二个 if 分支（检查 subtype === 'error'）不可达，
+   * 因为第一个 if（检查 type === 'result'）已经覆盖了所有 result 类型并 return。
+   * 现将两个分支合并为一个正确的条件判断链。
    */
   static getExitCode(lastEvent: StreamEvent): number {
     if (lastEvent.type === 'result') {
-      return lastEvent.subtype === 'success' ? 0 : 1;
+      if (lastEvent.subtype === 'success') return 0;
+      // subtype === 'error'：执行失败，进行错误码映射
+      const errorCode = (lastEvent as any).errorCode;
+      if (errorCode === 'MAX_TURNS_EXCEEDED') return 2;
+      if (errorCode === 'TIMEOUT') return 3;
+      if (errorCode === 'TOOL_PERMISSION_DENIED') return 4;
+      if (errorCode === 'AUTH_FAILURE') return 5;
+      return 1; // 通用失败
     }
-    if (lastEvent.type === 'result' && lastEvent.subtype === 'error') {
-      // 特定错误码映射
-      if ('errorCode' in lastEvent) {
-        const errorCode = (lastEvent as any).errorCode;
-        if (errorCode === 'MAX_TURNS_EXCEEDED') return 2;
-        if (errorCode === 'TIMEOUT') return 3;
-        if (errorCode === 'TOOL_PERMISSION_DENIED') return 4;
-        if (errorCode === 'AUTH_FAILURE') return 5;
-      }
-      return 1;
-    }
-    return 0;
+    return 0; // 非 result 事件（如 progress/assistant）不产生退出码
   }
 }
 ```

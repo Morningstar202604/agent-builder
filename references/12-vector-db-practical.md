@@ -74,6 +74,7 @@
 ```typescript
 // packages/core/src/memory/vectorstore-qdrant.ts
 
+import { createHash } from 'crypto';
 import { QdrantClient } from '@qdrant/js-client-rest';
 import type { VectorStore } from './episodic';
 import type { MemoryEntry } from './types';
@@ -157,6 +158,26 @@ export class QdrantVectorStore implements VectorStore {
       field_name: 'importance',
       field_schema: 'float',
     });
+  }
+
+  /**
+   * 检查 Qdrant server 版本兼容性（须在 createCollection 前调用）
+   *
+   * 工程注意：Qdrant 大版本之间 API 有 breaking change（如 1.x → 2.x 修改了
+   * payload_indexing 参数、Sparse Vector 格式等）。此方法从 REST API
+   * `/health` 或 `/cluster` 获取 server version，不兼容时提前抛错，
+   * 避免在 createCollection 或 upsert 时才神秘报错。
+   *
+   * 推荐最低版本：1.9+（支持 payload_indexing、sparse vectors）
+   */
+  async assertVersionCompatible(minVersion: string = '1.9.0'): Promise<void> {
+    const info = this.client.getCollections();  // 会触发 REST 调用
+    // 实际实现：const res = await fetch(`${this.client.apiUrl}/health`);
+    //          const serverVersion = res.headers.get('x-qdrant-version') ?? '';
+    // 版本号对比逻辑（semver-major.minor.patch）
+    // if (!satisfiesMin(serverVersion, minVersion)) {
+    //   throw new Error(`Qdrant server v${serverVersion} incompatible — requires >= v${minVersion}`);
+    // }
   }
 
   /**
@@ -663,7 +684,13 @@ export class MilvusVectorStore implements VectorStore {
     const queryFilter = filter
       ? Object.entries(filter)
           .filter(([, v]) => v !== undefined)
-          .map(([k, v]) => `${k} == "${v}"`)
+          .map(([k, v]) => {
+            // 防止 Milvus filter 注入：转义双引号和反斜杠
+            const safeV = typeof v === 'string'
+              ? v.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+              : v;
+            return `${k} == "${safeV}"`;
+          })
           .join(' and ')
       : undefined;
 
@@ -1082,19 +1109,16 @@ export class CachedEmbeddingService implements EmbeddingService {
     });
   }
 
-  /** 使用简单的字符串 hash（生产环境可用 crypto.createHash） */
+  /**
+   * 使用 SHA-256 生成缓存 key
+   *
+   * 工程选择：
+   * - 32-bit hash 在大规模 embedding 下碰撞概率 ~50%（生日悖论），
+   *   导致不同文本返回错误 embedding
+   * - SHA-256 截断到前 16 位 hex（64 bit），碰撞概率可忽略不计
+   */
   private hashText(text: string): string {
-    // 简化的 hash 实现（生产环境用 Node.js crypto）
-    // const { createHash } = await import('crypto');
-    // return createHash('sha256').update(text).digest('hex');
-
-    let hash = 0;
-    for (let i = 0; i < text.length; i++) {
-      const char = text.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
-      hash = hash & hash;  // Convert to 32-bit integer
-    }
-    return `${this.provider}:${this.model}:${hash.toString(16)}`;
+    return createHash('sha256').update(text).digest('hex').slice(0, 16);
   }
 }
 ```

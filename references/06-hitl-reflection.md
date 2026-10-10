@@ -113,6 +113,8 @@ export interface PendingApproval {
   decision?: ApprovalDecision;
   /** 关联的 Agent 会话 */
   sessionId: string;
+  /** 超时计时器 ID —— 审批决策时 clearTimeout 防止堆积 */
+  timeoutId?: ReturnType<typeof setTimeout>;
 }
 
 /** 风险评估结果 */
@@ -295,7 +297,7 @@ export class ApprovalEngine {
     this.emit({ type: 'approval_required', approval });
     this.emit({ type: 'batch_update', pendingCount: this.pending.size });
 
-    // 启动超时计时器
+    // 启动超时计时器（timeoutId 存入 approval 对象，resolve 时 clearTimeout）
     this.startTimeout(approval);
 
     return { allow: false, approval };
@@ -310,6 +312,9 @@ export class ApprovalEngine {
   ): Promise<void> {
     const approval = this.pending.get(approvalId);
     if (!approval || approval.status !== 'pending') return;
+
+    // 🔑 clearTimeout 防止定时器堆积（服务重启超时由外部调度器补偿）
+    if (approval.timeoutId) clearTimeout(approval.timeoutId);
 
     approval.status = 'status' in decision ? decision.status : (decision as any).status;
     approval.decision = decision;
@@ -388,7 +393,8 @@ export class ApprovalEngine {
 
   private startTimeout(approval: PendingApproval): void {
     const ttl = approval.expiresAt - Date.now();
-    setTimeout(() => {
+    // 🔑 把 timeoutId 存入 approval 对象，resolve 时可 clearTimeout
+    approval.timeoutId = setTimeout(() => {
       if (approval.status !== 'pending') return;  // 已经决策了
 
       // 超时 → 按默认策略
@@ -428,6 +434,16 @@ export class ApprovalEngine {
 import type { AgentTool, ToolContext } from '../agent/types';
 import { ApprovalEngine } from './approval-engine';
 import type { ApprovalDecision } from './types';
+import { z } from 'zod';
+
+/** Zod schema：校验 modifiedArgs 结构，替代 `as any` 强转 */
+const ModifiedDecisionSchema = z.object({
+  status: z.literal('modified'),
+  userId: z.string(),
+  modifiedArgs: z.record(z.unknown()),
+  at: z.number(),
+});
+type ModifiedDecision = z.infer<typeof ModifiedDecisionSchema>;
 
 /**
  * 包装一个工具，使其执行前经过 HITL 审批检查。
@@ -459,21 +475,21 @@ export function createHITLWrapper(
         case 'approved':
           return originalTool.execute(args, ctx);
 
-        case 'modified':
-          // 用修改后的参数执行
-          return originalTool.execute(
-            (approvalDecision as any).modifiedArgs ?? args,
-            ctx
-          );
+        case 'modified': {
+          // Zod 校验 modifiedArgs 结构，替代 `as any` 强转
+          const parsed = ModifiedDecisionSchema.safeParse(approvalDecision);
+          const modifiedArgs = parsed.success ? parsed.data.modifiedArgs : args;
+          return originalTool.execute(modifiedArgs, ctx);
+        }
 
         case 'rejected':
           return JSON.stringify({
             error: '操作已被人类审批人拒绝',
-            reason: (approvalDecision as any).reason,
+            reason: (approvalDecision as { reason?: string }).reason ?? '未说明原因',
           });
 
         case 'timeout':
-          if ((approvalDecision as any).defaultAction === 'reject') {
+          if ((approvalDecision as { defaultAction?: string }).defaultAction === 'reject') {
             return JSON.stringify({
               error: '审批超时，操作被自动拒绝',
             });
@@ -955,7 +971,8 @@ import type {
 } from './types';
 
 export class LLMJudgeEvaluator {
-  private llm: LLMClient;
+  /** evaluator LLM —— readonly 防止外部替换，但允许 Reflector 访问用于反思 */
+  readonly llm: LLMClient;
 
   /** 默认权重：不同类型任务可调 */
   private weights: { [K in keyof QualityDimensions]: number } = {
@@ -1183,11 +1200,11 @@ export class Reflector {
         return;
       }
 
-      // 3. 自动停止：连续 2 轮分数不上升
+      // 3. 自动停止：至少 3 轮后，连续 2 轮分数严格不上升（< 而非 <=，避免首次同分误停）
       if (
         this.config.enableAutoStop &&
-        scores.length >= 2 &&
-        scores[scores.length - 1]! <= scores[scores.length - 2]!
+        scores.length >= 3 &&
+        scores[scores.length - 1]! < scores[scores.length - 2]!
       ) {
         yield {
           type: 'pass',
@@ -1259,8 +1276,10 @@ ${issuesText}
   "improvements": ["具体改进建议1", "具体改进建议2"]
 }`;
 
+    // 🔑 反思步骤必须使用 evaluator LLM，不能用 generator
+    // 否则 LLM 会自我认可，失去反思的独立视角
     let evalOutput = '';
-    for await (const chunk of this.generator.stream(
+    for await (const chunk of this.evaluator.llm.stream(
       [{ role: 'user', content: prompt }],
       { maxTokens: 512, temperature: 0.3 }
     )) {

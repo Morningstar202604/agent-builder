@@ -719,37 +719,30 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
  * { jsonrpc: "2.0", method: "notifications/message", params: { level: "info", message: "..." } }
  */
 export function setupStreamingTool(server: Server, fsRoot: string): void {
-  server.setRequestHandler(ListToolsRequestSchema, async (req, _extra) => {
-    // 在已有工具的基础上追加
-    const existing = await req;
-    return {
-      tools: [
-        ...existing.tools,
-        {
-          name: 'analyze_codebase',
-          description: 'Analyze the codebase for issues (long-running, progress notifications)',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              path: { type: 'string' },
-              scan_type: { type: 'string', enum: ['full', 'lint', 'security'] },
-            },
-            required: ['path'],
+  server.setRequestHandler(ListToolsRequestSchema, async (_req, _extra) => ({
+    tools: [
+      {
+        name: 'analyze_codebase',
+        description: 'Analyze the codebase for issues (long-running, progress notifications)',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            path: { type: 'string' },
+            scan_type: { type: 'string', enum: ['full', 'lint', 'security'] },
           },
+          required: ['path'],
         },
-      ],
-    };
-  });
+      },
+    ],
+  }));
 
-  // 拦截工具调用，添加 stream 处理
-  const originalHandler = server.clientImplementation?.requestHandlers?.get('tools/call');
-
-  server.setRequestHandler('tools/call' as any, async (request, extra) => {
+  // 拦截工具调用，直接通过 setRequestHandler 替换，不依赖内部属性
+  server.setRequestHandler(CallToolRequestSchema, async (request, _extra) => {
     if (request.params.name === 'analyze_codebase') {
       return await handleStreamingAnalysis(request.params.arguments, server);
     }
-    // 其他工具走默认处理
-    return originalHandler ? originalHandler(request, extra) : null;
+    // 其他工具：未知工具名由 SDK 自动返回_METHOD_NOT_FOUND 错误
+    throw new Error(`Unknown tool: ${request.params.name}`);
   });
 }
 
@@ -774,12 +767,15 @@ async function handleStreamingAnalysis(
     if (processed % 5 === 0 || processed === totalFiles) {
       const progress = Math.round((processed / totalFiles) * 100);
 
-      // 通过 server notification 推送进度
-      // @ts-ignore —— MCP SDK 的类型定义可能不暴露 sendNotification
-      await server.sendLoggingMessage({
-        level: 'info',
-        data: `Analyzing... ${progress}% complete (${processed}/${totalFiles})`,
-      } as any);
+      // 通过 server.notification 推送日志消息（MCP 标准 notification）
+      // 注意：server.notification 是 SDK 公开 API，不需要 @ts-ignore
+      await server.notification({
+        method: "notifications/message",
+        params: {
+          level: "info" as const,
+          message: `Analyzing... ${progress}% complete (${processed}/${totalFiles})`,
+        },
+      });
     }
 
     // 模拟分析（生产中这里是真正的分析逻辑）

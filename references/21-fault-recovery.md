@@ -177,8 +177,19 @@ export class SnapshotManager {
     try {
       return JSON.stringify(snapshot, (key, value) => {
         // 过滤已知危险字段
-        if (key === 'abortController' || key === 'stream' || key === 'socket') {
+        // 注意：不能过滤 'stream' 键——AgentSnapshot.stream 中的 lastEventId/lastEventSeq
+        // 是断线恢复时补发事件所必需的。如需过滤 internal Writable stream handle，
+        // 应检查 value 类型（如 value instanceof Writable），而非按 key 名称过滤
+        if (key === 'abortController' || key === 'socket') {
           return undefined;
+        }
+        // 额外防护：过滤任何非 JSON-safe 的对象（如 stream handles, sockets）
+        if (typeof value === 'object' && value !== null) {
+          // 保留 plain object 和 Array（如 AgentSnapshot.stream 是 plain object）
+          if (value.constructor !== Object && !Array.isArray(value)) {
+            // 非 plain object（如 Writable, Socket 等实例）过滤掉
+            return undefined;
+          }
         }
         return value;
       });
@@ -700,13 +711,25 @@ export async function withIdempotency<T>(
     const result = await waitForResult(key);
     if (result !== null) return result as T;
 
-    // 执行没成功（上次崩溃了），重试
-    // 重新 SET——可能会失败但没关系，走 fallthrough
+    // 执行没成功（上次崩溃了 or 超时），需要重试
+    // 先尝试清除过期的 pending 锁，再重新获取
+    const currentValue = await redis.get(key);
+    if (currentValue === 'pending') {
+      // 锁持有方可能已经崩溃——归还锁（del + 重新 SET NX）
+      await redis.del(key);
+      // fallthrough 到下方重新尝试获取锁
+    } else if (currentValue && currentValue !== 'pending') {
+      // 已经有结果了（并发情况下其他进程完成了）
+      const parsed = JSON.parse(currentValue);
+      if (parsed.status === 'done') return parsed.result as T;
+      if (parsed.status === 'error') throw new Error(parsed.error);
+    }
+    // 注意：此处可能再次竞争失败（其他并发进程抢先），需要让调用方重试整个 withIdempotency
   }
 
   try {
     const result = await fn();
-    await redis.setex(key, 24 * 60 * 60, JSON.stringify({ status: 'done', result }));
+    await redis.set(key, JSON.stringify({ status: 'done', result }), 'EX', 24 * 60 * 60);
     return result;
   } catch (e) {
     // 失败时删除缓存 —— 下次重试允许重新执行
@@ -726,7 +749,7 @@ async function waitForResult(key: string, timeoutMs = 5000): Promise<unknown> {
     }
     await new Promise((r) => setTimeout(r, 100));
   }
-  return null; // 超时
+  return null; // 超时——调用方应检查并重试或返回错误
 }
 ```
 
@@ -1057,9 +1080,10 @@ interface RecoveryAction {
 export function classifyError(error: unknown): RecoveryAction {
   const message = (error as Error).message ?? '';
   const status = (error as any).status ?? (error as any).statusCode ?? 0;
+  const code = (error as any).code ?? '';
 
-  // Rate limit
-  if (status === 429 || message.includes('rate limit')) {
+  // Rate limit —— 优先用 status code 判断，避免字符串匹配不稳定的问题
+  if (status === 429) {
     return {
       category: 'retryable_rate_limit',
       retry: true,
@@ -1071,7 +1095,7 @@ export function classifyError(error: unknown): RecoveryAction {
     };
   }
 
-  // Server error
+  // Server error —— 5xx 一律可重试
   if (status >= 500) {
     return {
       category: 'retryable_server_error',
@@ -1084,8 +1108,8 @@ export function classifyError(error: unknown): RecoveryAction {
     };
   }
 
-  // Network
-  if (message.includes('ECONNRESET') || message.includes('ETIMEDOUT') || message.includes('network')) {
+  // Network —— 用 error.code 判断（如 ECONNRESET、ETIMEDOUT），不依赖 message 字符串
+  if (code === 'ECONNRESET' || code === 'ETIMEDOUT' || code === 'ENOTFOUND' || code === 'ECONNREFUSED') {
     return {
       category: 'retryable_network',
       retry: true,

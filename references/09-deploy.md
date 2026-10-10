@@ -54,7 +54,7 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - POSTGRES_URL=postgresql://agentcore:${POSTGRES_PASSWORD}@postgres:5432/agentcore
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
       - QDRANT_URL=http://qdrant:6333
       - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
       - NEXTAUTH_URL=${NEXTAUTH_URL:-http://localhost:3000}
@@ -198,10 +198,11 @@ RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 nextjs
 
 # 只拷贝构建产物，不带走源码和 devDependencies
+# P1 修复：删除冗余 COPY node_modules（next/standalone 已含 production deps，
+# 重复 COPY 会把 devDependencies 也带进镜像，增大体积 + 扩大攻击面）
 COPY --from=builder /app/apps/web/.next/standalone ./
 COPY --from=builder /app/apps/web/.next/static ./.next/static
 COPY --from=builder /app/apps/web/public ./public
-COPY --from=builder /app/node_modules ./node_modules
 
 USER nextjs
 EXPOSE 3000
@@ -255,7 +256,9 @@ server {
     proxy_set_header X-Forwarded-Proto $scheme;
 
     # === SSE 路由 —— 关键配置 ===
+    # P1 修复：SSE 路径需要独立 rate limit（高于普通 API 的 burst，但仍有上限防滥用）
     location /api/chat {
+        limit_req zone=sse burst=5 nodelay;     # SSE 专用限流，允许更高突发
         proxy_pass http://web_backend;
         proxy_http_version 1.1;
         proxy_set_header Connection '';
@@ -268,6 +271,7 @@ server {
 
     # === API 路由 —— 正常 HTTP ===
     location /api/ {
+        limit_req zone=api burst=20 nodelay;
         proxy_pass http://web_backend;
         proxy_read_timeout 30s;
     }
@@ -285,9 +289,7 @@ server {
 
     # === 速率限制 —— 防爬 ===
     limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
-    location /api/ {
-        limit_req zone=api burst=20 nodelay;
-    }
+    limit_req_zone $binary_remote_addr zone=sse:10m rate=2r/s;  # SSE 专用：聊天请求低频长连接
 }
 ```
 
@@ -339,6 +341,10 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+
+      # P2 修复：补全缺失的 vars step（原 outputs 引用了未定义的 steps.vars）
+      - id: vars
+        run: echo "short_sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
     outputs:
       short_sha: ${{ steps.vars.outputs.short_sha }}
@@ -577,21 +583,22 @@ export async function validateSecrets(): Promise<{ missing: string[]; ok: boolea
 # docker-compose.secrets.yml（开发环境密钥文件 —— 不提交到 Git）
 # 生产替代为 Docker secrets 或 AWS SM
 # 这个文件通过 docker compose -f docker-compose.yml -f docker-compose.secrets.yml up 叠加使用
+#
+# 注意：redis_password 不在此声明——所有服务通过读取环境变量 ${REDIS_PASSWORD}
+# 获取 Redis 密码（主 compose 文件已使用 ${REDIS_PASSWORD} 变量注入方式）。
+# 如果要改用 Docker secrets，需在每个使用 Redis 的服务中挂载并读取文件。
 
 secrets:
   openai_api_key:
     file: ./secrets/openai_api_key.txt
   postgres_password:
     file: ./secrets/postgres_password.txt
-  redis_password:
-    file: ./secrets/redis_password.txt
 
 services:
   web:
     secrets:
       - openai_api_key
       - postgres_password
-      - redis_password
 ```
 
 ---
@@ -618,7 +625,13 @@ services:
 const { execSync } = require('child_process');
 
 // 自动检测当前 Git 提交作为版本元数据
-const gitSha = execSync('git rev-parse --HEAD').toString().trim().slice(0, 8);
+// P0 修复：git rev-parse --HEAD 不规范（应为 HEAD），且无 commit 时崩溃
+let gitSha = 'unknown';
+try {
+  gitSha = execSync('git rev-parse HEAD').toString().trim().slice(0, 8);
+} catch {
+  // 无 git 仓库或无 commit 时 fallback
+}
 
 module.exports = {
   appId: 'com.agentcore.app',
@@ -654,7 +667,9 @@ module.exports = {
     gatekeeperAssess: false,
     entitlements: 'resources/entitlements.mac.plist',
     entitlementsInherit: 'resources/entitlements.mac.plist',
-    notarize: false,  // 也见 Step 6b 手动签名
+    // P0 修复：notarize 是 electron-builder v23+ 布尔值，v22 不支持此字段。
+    // 公证通过下方 afterSign hook 条件控制（未配置 APPLE_ID 时跳过），无需显式写 false。
+    // 如需全局禁用公证，设环境变量 SKIP_NOTARIZE=true 并在 afterSign 中判断。
   },
 
   // === Windows ===
@@ -664,7 +679,8 @@ module.exports = {
       { target: 'portable', arch: ['x64'] },
     ],
     icon: 'resources/icon.ico',
-    sign: false,  // 见 Step 6b
+    // P0 修复：sign 不是 electron-builder 的合法顶层字段（会导致 unknown option 警告）。
+    // Windows 签名通过 afterSign hook 或 scripts/sign-windows.sh 独立处理。
   },
 
   // === Linux ===
@@ -751,7 +767,7 @@ fi
 xcrun notarytool submit "${DMG_PATH}" \
   --apple-id "${APPLE_ID}" \
   --team-id "${APPLE_TEAM_ID}" \
-  --password "${APPLE_APP_PASSWORD}" \
+  --apple-id-password "${APPLE_APP_PASSWORD}" \
   --wait
 
 # 3. 将公证结果订到安装包上（staple）—— 这样用户离线也能验证
@@ -766,7 +782,8 @@ echo "✅ 签名 + 公证完成"
 # 全平台 Electron 构建脚本
 # 使用说明：在项目根目录执行 bash scripts/build-electron.sh
 
-set -e
+# P2 修复：set -euo pipefail 提供严格模式，== 在 sh 中不兼容，用 = 代替
+set -euo pipefail
 
 echo "🔨 1. 构建 Web 应用"
 pnpm build --filter @agentcore/web
@@ -774,7 +791,7 @@ pnpm build --filter @agentcore/web
 echo "🔨 2. 构建 Electron 主进程"
 pnpm build --filter @agentcore/electron
 
-if [ "$(uname)" == "Darwin" ]; then
+if [ "$(uname)" = "Darwin" ]; then
   echo "🍎 3. 构建 macOS 包"
   cd apps/electron
   npx electron-builder --mac --arm64 --x64
@@ -788,7 +805,7 @@ if [ "$(uname)" == "Darwin" ]; then
   fi
 fi
 
-if [ "$(uname)" == "Linux" ]; then
+if [ "$(uname)" = "Linux" ]; then
   echo "🐧 3. 构建 Linux 包"
   cd apps/electron
   npx electron-builder --linux
@@ -985,17 +1002,21 @@ export function DeployStatusPanel() {
 // apps/web/src/app/api/health/route.ts
 
 import { NextResponse } from 'next/server';
-import { validateSecrets } from '@agentcore/server/security/secrets';
 import { redis } from '@/lib/redis';
 
 export async function GET() {
   const checks: Record<string, { status: 'ok' | 'error'; latencyMs?: number; detail?: string }> = {};
 
-  // 1. 密钥完整性检查
-  const secretCheck = await validateSecrets();
+  // P0 修复：健康检查不应调用 validateSecrets() — 后者在 fail-fast 时调用 process.exit(1)，
+  // 会导致健康检查端点直接杀掉进程。秘密验证在启动时处理。
+  // 这里仅验证 secret 文件/环境变量是否已加载（非空检查），不做 fail-fast。
+  const requiredSecrets = ['OPENAI_API_KEY', 'POSTGRES_PASSWORD', 'NEXTAUTH_SECRET'];
+  const loadedSecrets = requiredSecrets.filter((k) => process.env[k]);
   checks.secrets = {
-    status: secretCheck.ok ? 'ok' : 'error',
-    detail: secretCheck.ok ? undefined : `Missing: ${secretCheck.missing.join(', ')}`,
+    status: loadedSecrets.length === requiredSecrets.length ? 'ok' : 'error',
+    detail: loadedSecrets.length === requiredSecrets.length
+      ? undefined
+      : `Missing: ${requiredSecrets.filter((k) => !process.env[k]).join(', ')}`,
   };
 
   // 2. Redis 连通性

@@ -76,16 +76,28 @@ import { MemoryManager } from '../memory/memory-manager';
  * LangGraph 状态定义。
  * messages 字段与 LangChain Message 格式兼容，
  * 这让 LangSmith 的 trace 展示直接可用。
+ *
+ * 🔑 reducer 使用去重合并：防止节点重试或循环执行时消息重复累积。
+ * 判断标准：role + content 相同视为同一条消息。
  */
 const AgentState = Annotation.Root({
   messages: Annotation<Array<{ role: 'user' | 'assistant' | 'tool'; content: string }>>({
     default: () => [],
-    reducer: (left, right) => left.concat(right),
+    reducer: (left, right) => {
+      // 去重合并：基于 role + content 组合判断是否重复
+      const seen = new Set(left.map(m => `${m.role}:${m.content}`));
+      const newOnes = right.filter(m => !seen.has(`${m.role}:${m.content}`));
+      return [...left, ...newOnes];
+    },
   }),
   currentInput: Annotation<string>({ default: () => '' }),
   toolResults: Annotation<Array<{ tool: string; result: string }>>({
     default: () => [],
-    reducer: (left, right) => left.concat(right),
+    reducer: (left, right) => {
+      // toolResults 也可能重试时重复 — 按 tool+result 去重
+      const seen = new Set(left.map(t => `${t.tool}:${t.result}`));
+      return [...left, ...right.filter(t => !seen.has(`${t.tool}:${t.result}`))];
+    },
   }),
   metadata: Annotation<Record<string, unknown>>({
     default: () => ({}),
@@ -208,17 +220,17 @@ export async function* streamAgentGraph(
 // packages/core/src/frameworks/langgraph-checkpoint.ts
 
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
-import { createPool } from '@vercel/postgres';
+import { Pool } from 'pg';
 
 /**
  * LangGraph 的 Checkpoint 持久化到 Postgres。
- * 这取代了你自己手写的状态快照（见 fault-recovery.md Chapter 1），
- * 因为 LangGraph 做了更完善的实现——包括状态版本控制、分支恢复。
+ * 🔑 @vercel/postgres（Neon serverless driver）不暴露 createPool，
+ * 正确做法：用 `pg` 包的 Pool 构造标准 Postgres 连接池。
  */
 export async function createPostgresCheckpointer(connectionString: string) {
-  const pool = createPool({ connectionString });
+  const pool = new Pool({ connectionString, max: 10 });
 
-  const checkpointer = new PostgresSaver(pool);
+  const checkpointer = new PostgresSaver(pool as any);
 
   // checkpointer.setup() 创建 checkpoint 相关的表
   // 幂等操作——重复调用不会报错
@@ -281,34 +293,89 @@ CrewAI 的三件套适合"并行分工"场景——让多个 Agent 同时处理�
 ```typescript
 // packages/core/src/frameworks/crewai-bridge.ts
 
-import { Crew, Agent as CrewAgent, Task } from 'crewai';
 import { AbstractAgent } from '../agent/abstract-agent';
 import { ToolRegistry } from '../tools/tool-registry';
 import { MemoryManager } from '../memory/memory-manager';
 
 /**
- * 将本项目的工具转换为 CrewAI Agent 可消费的 tool。
+ * 🔑 CrewAI 是 Python-only 包，没有官方 TypeScript 支持。
+ * 正确做法：TS 侧通过 HTTP 调用 Python CrewAI 服务，不直接 import。
  *
- * CrewAI 的工具定义是一个带有 description + func 的对象。
- * 我们用代理模式把调用转发到本项目的 ToolRegistry。
+ * Python 端需要暴露一个 /api/crewai/run 端点，
+ * 接收 {crew_config: {...}, topic: "..."} 返回流式结果。
  */
-function convertToolsToCrewAI(toolRegistry: ToolRegistry, toolNames: string[]) {
+
+interface CrewAIAgentConfig {
+  role: string;
+  goal: string;
+  backstory: string;
+  tools: string[];
+}
+
+interface CrewAIBridgeConfig {
+  agents: CrewAIAgentConfig[];
+  process: 'sequential' | 'hierarchical';
+  topic: string;
+}
+
+/**
+ * 通过 HTTP Python CrewAI 服务交互的客户端。
+ * CrewAI 的编排逻辑（Process.sequential / Process.hierarchical）由 Python 端实现，
+ * TS 侧只负责传配置、收结果，保持"本项目为主"的原则。
+ */
+class CrewAIHttpClient {
+  constructor(private baseUrl: string) {}
+
+  async *runCrew(config: CrewAIBridgeConfig): AsyncGenerator<string> {
+    const res = await fetch(`${this.baseUrl}/api/crewai/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    });
+
+    if (!res.ok) throw new Error(`CrewAI Python service error: ${res.status}`);
+
+    // Python 端以 NDJSON 流式返回每行一个 JSON {phase, content}
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error('No response body');
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const parsed = JSON.parse(line);
+        yield `[${parsed.phase}] ${parsed.content}`;
+      }
+    }
+  }
+}
+
+/**
+ * 将本项目的工具转换为 CrewAI Agent 可消费的 tool 描述。
+ * 这些描述被传给 Python 端，由 Python 端创建实际的 CrewAI Agent。
+ */
+function buildCrewToolDescriptions(toolRegistry: ToolRegistry, toolNames: string[]) {
   return toolNames.map((name) => {
     const meta = toolRegistry.getMeta(name);
     return {
       name,
       description: meta?.description ?? `Execute ${name}`,
-      func: async (input: string) => {
-        const result = await toolRegistry.call(name, JSON.parse(input));
-        return JSON.stringify(result);
-      },
     };
   });
 }
 
 /**
- * 构建 CrewAI 的 Agent 配置——但不实际创建 CrewAI 的 Agent 对象，
- * 而是返回配置，让你在编排时有完全控制权。
+ * 构建 CrewAI Agent 配置——通过 HTTP 传给 Python 服务，
+ * 不在 TS 侧创建 CrewAI 对象。
  */
 export function buildCrewAgentConfig(
   abstractAgent: AbstractAgent,
@@ -318,18 +385,15 @@ export function buildCrewAgentConfig(
     goal: string;
     backstory: string;
     tools: string[];
-    allowDelegation?: boolean;
   },
 ) {
   return {
     role: options.role,
     goal: options.goal,
     backstory: options.backstory,
-    tools: convertToolsToCrewAI(toolRegistry, options.tools),
-    // CrewAI Agent 的 llm 工厂——我们用闭包调 AbstractAgent
-    llm: undefined as unknown, // 占位，实际通过 custom 执行器注入
-    allow_delegation: options.allowDelegation ?? false,
+    tools: buildCrewToolDescriptions(toolRegistry, options.tools),
     // 自定义执行器：绕过 CrewAI 的 LLM 调用，直接走 AbstractAgent
+    // Python 端如果也实现了这个 HTTP fallback 接口，可以两路互补
     executeTask: async (taskDescription: string) => {
       const results: string[] = [];
       const generator = abstractAgent.run(taskDescription);
@@ -344,10 +408,8 @@ export function buildCrewAgentConfig(
 }
 
 /**
- * 推荐模式：CrewAI 仅用于任务分配，执行走 AbstractAgent。
- *
- * 创建 Crew 时用 delegate=false，在我们自己的编排层里完成工具调用。
- * 这是"本项目为主"的核心体现。
+ * 推荐模式：CrewAI Python 服务负责任务分配和编排，
+ * 执行走 AbstractAgent（本项目）。
  */
 export function createResearchCrew(config: {
   researcher: AbstractAgent;
@@ -355,8 +417,14 @@ export function createResearchCrew(config: {
   reviewer: AbstractAgent;
   toolRegistry: ToolRegistry;
   memory: MemoryManager;
+  /** Python CrewAI 服务的 URL */
+  pythonServiceUrl?: string;
 }): { run: (topic: string) => AsyncGenerator<string> } {
-  // CrewAI 的 Agent 定义仅作为任务模板
+  // 如果有 Python CrewAI 服务，用 HTTP 调用；否则 fallback 到本地 AbstractAgent
+  const httpClient = config.pythonServiceUrl
+    ? new CrewAIHttpClient(config.pythonServiceUrl)
+    : null;
+
   const researcherConfig = buildCrewAgentConfig(config.researcher, config.toolRegistry, {
     role: 'Senior Research Analyst',
     goal: 'Conduct thorough research and fact-finding on the given topic',
@@ -375,12 +443,21 @@ export function createResearchCrew(config: {
     async *run(topic: string) {
       yield `Starting research crew for: ${topic}`;
 
-      // Phase 1: Research（并行执行信息收集）
+      if (httpClient) {
+        // 🔑 CrewAI 编排走 Python 服务（HTTP）
+        yield* httpClient.runCrew({
+          agents: [researcherConfig, writerConfig],
+          process: 'sequential',
+          topic,
+        });
+        return;
+      }
+
+      // Fallback：没有 Python 服务时，本地顺序执行
       const researchTask = `Research the following topic and provide key findings, sources, and analysis.\n\nTopic: ${topic}`;
       const researchResult = await researcherConfig.executeTask(researchTask);
       yield `Research complete. Findings: ${researchResult.slice(0, 200)}...`;
 
-      // Phase 2: Writing（依赖 Research 结果）
       const writingTask = `Based on the following research, write a comprehensive summary.\n\nResearch:\n${researchResult}`;
       const writeResult = await writerConfig.executeTask(writingTask);
       yield `Draft complete.`;
@@ -424,34 +501,104 @@ import { ToolRegistry } from '../tools/tool-registry';
 import { ChatCompletionClient } from './autogen-openai-client';
 
 /**
- * 将本项目的 AbstractClient 作为 AutoGen 的 LLM backend。
+ * 将本项目的 LLMClient 适配为 AutoGen 的 ChatCompletionClient。
  *
- * AutoGen 内部需要调用 `client.create(messages)` 和 `client.stream(messages)`。
- * 我们把调用转发到本项目的 LLMClient（已有的 OpenAI/Anthropic 抽象层）。
+ * AutoGen 内部需要：
+ * - create(messages, tools?) → { content, tool_calls? }
+ * - create_stream(messages, tools?) → AsyncIterator of { content, tool_calls? }
+ *
+ * 关键：本项目 LLM 返回的 tool_calls 格式可能与 AutoGen 期望的不同，
+ * 需要做格式转换。
  */
 export function wrapLLMForAutoGen(llmClient: {
-  create: (params: { messages: Array<{ role: string; content: string }> }) => Promise<{ choices: [{ message: { content: string } }] }>;
-  stream: (params: { messages: Array<{ role: string; content: string }> }) => AsyncGenerator<{ choices: [{ delta: { content: string } }] }>;
+  create: (params: {
+    messages: Array<{ role: string; content: string }>;
+    tools?: Array<{ type: 'function'; function: { name: string; description: string; parameters: object } }>;
+  }) => Promise<{
+    choices: [{ message: { content: string; tool_calls?: Array<{ function: { name: string; arguments: string } }> } }];
+  }>;
+  stream: (params: {
+    messages: Array<{ role: string; content: string }>;
+    tools?: Array<{ type: 'function'; function: { name: string; description: string; parameters: object } }>;
+  }) => AsyncGenerator<{ choices: [{ delta: { content?: string; tool_calls?: Array<{ function: { name: string; arguments: string } }] } }] }>;
 }) {
   return {
-    async create(params: { messages: Array<{ role: string; content: string }>; tools?: unknown[] }) {
-      // AutoGen 会在 tools 里传 function calling 参数，我们需要转换回本项目的工具格式
+    /**
+     * AutoGen 单次调用：把 result.choices[0].message 映射到 AutoGen 期望格式
+     * 🔑 tool_calls 从 function calling 结果透传给 AutoGen 用于自动执行
+     */
+    async create(params: {
+      messages: Array<{ role: string; content: string }>;
+      tools?: Array<{ type: 'function'; function: { name: string; description: string; parameters: object } }>;
+    }) {
       const result = await llmClient.create(params);
+      const msg = result.choices[0].message;
+
+      // 转换 tool_calls 格式：从 OpenAI 风格 → AutoGen 内部格式
+      const toolCalls = msg.tool_calls?.map(tc => ({
+        id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        type: 'function' as const,
+        function: {
+          name: tc.function.name,
+          arguments: tc.function.arguments,
+        },
+      }));
+
       return {
-        content: result.choices[0].message.content,
-        // AutoGen 期望 tool_calls 字段——直接从本项目 LLM 响应中透传
-        tool_calls: [],
+        content: msg.content,
+        tool_calls: toolCalls,
       };
     },
 
-    async *stream(params: { messages: Array<{ role: string; content: string }> }) {
+    /**
+     * AutoGen 流式调用：逐 chunk 累积内容 + 累积 tool_calls
+     * 🔑 需要在流结束时把完整的 tool_calls 合并到最终 chunk
+     */
+    async *create_stream(params: {
+      messages: Array<{ role: string; content: string }>;
+      tools?: Array<{ type: 'function'; function: { name: string; description: string; parameters: object } }>;
+    }) {
+      let fullContent = '';
+      const accumulatedToolCalls: Array<{ id?: string; type: string; function: { name: string; arguments: string } }> = [];
+
       for await (const chunk of llmClient.stream(params)) {
-        yield { delta: { content: chunk.choices[0].delta.content || '' } };
+        const delta = chunk.choices[0].delta;
+
+        // 累积文本内容
+        if (delta.content) {
+          fullContent += delta.content;
+          yield { content: delta.content };
+        }
+
+        // 累积 tool_calls（流式分片可能不完整，需拼接 arguments）
+        if (delta.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            const existing = accumulatedToolCalls.find(e => e.function.name === tc.function.name);
+            if (existing) {
+              existing.function.arguments += tc.function.arguments;
+            } else {
+              accumulatedToolCalls.push({
+                id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                type: 'function',
+                function: { name: tc.function.name, arguments: tc.function.arguments },
+              });
+            }
+          }
+        }
+      }
+
+      // 流结束时输出合并后的 tool_calls
+      if (accumulatedToolCalls.length > 0) {
+        yield { content: fullContent, tool_calls: accumulatedToolCalls };
       }
     },
 
     model: 'agentcore-llm',
     pricing: { prompt_price_per_1m: 0, completion_price_per_1m: 0 },
+    config_list: [{
+      model: 'agentcore-llm',
+      api_type: 'openai',
+    }],
   };
 }
 
@@ -464,18 +611,29 @@ export function createCodeReviewPair(
   llmClient: ReturnType<typeof wrapLLMForAutoGen>,
   toolRegistry: ToolRegistry,
 ) {
-  const coder = new ConversableAgent('coder', {
+  // 🔑 AutoGen v0.2+ API：ConversableAgent 构造参数需使用 config_list 正确格式
+  const coder = new ConversableAgent({
+    name: 'coder',
     system_message: `You are a Python expert. Write code to solve the problem.
       When the code is correct and all tests pass, reply with "TERMINATE".`,
-    llm_config: { config_list: [{ model: 'agentcore-llm', ...llmClient }] },
-    is_termination_msg: (msg) => msg.content?.includes('TERMINATE') ?? false,
+    llm_config: {
+      config_list: [{ model: 'agentcore-llm', api_key: 'placeholder' }],
+      ...(llmClient as object),
+    } as any,
+    is_termination_msg: (msg: { content?: string }) => msg.content?.includes('TERMINATE') ?? false,
+    human_input_mode: 'NEVER',
   });
 
-  const tester = new ConversableAgent('tester', {
+  const tester = new ConversableAgent({
+    name: 'tester',
     system_message: `You run tests on the provided code. If tests fail, send back
       the error with instructions to fix. Never say TERMINATE.`,
-    llm_config: { config_list: [{ model: 'agentcore-llm', ...llmClient }] },
+    llm_config: {
+      config_list: [{ model: 'agentcore-llm', api_key: 'placeholder' }],
+      ...(llmClient as object),
+    } as any,
     code_execution_config: { use_docker: false, timeout: 30 },
+    human_input_mode: 'NEVER',
   });
 
   return { coder, tester };
@@ -573,15 +731,33 @@ export class HybridOrchestrator {
       llmClient: /* 项目已有 LLM 工厂 */,
       toolRegistry,
       memoryManager: memory,
+      systemPrompt: '你是一个通用助手。请以有帮助、安全的方式回答用户问题。',
     }));
 
-    // LangGraph 绑定的 Agent（用于需要 checkpoint 的复杂工作流）
+    // 🔑 每个角色创建独立的 AbstractAgent 实例，各自不同 system prompt
     const researchAgent = new AbstractAgent({
       llmClient: /* LLM 工厂 */,
       toolRegistry,
       memoryManager: memory,
+      systemPrompt: '你是资深研究分析师。擅长多角度收集信息、交叉验证、形成有依据的结论。',
     });
     this.agents.set('researcher', researchAgent);
+
+    const writerAgent = new AbstractAgent({
+      llmClient: /* LLM 工厂 */,
+      toolRegistry,
+      memoryManager: memory,
+      systemPrompt: '你是技术写作专家。擅长将复杂研究转化为结构清晰、易读的文档。',
+    });
+    this.agents.set('writer', writerAgent);
+
+    const reviewerAgent = new AbstractAgent({
+      llmClient: /* LLM 工厂 */,
+      toolRegistry,
+      memoryManager: memory,
+      systemPrompt: '你是严格的质量审查员。检查事实准确性、逻辑完整性，发现问题直接指出。',
+    });
+    this.agents.set('reviewer', reviewerAgent);
 
     if (options.checkpointer) {
       this.langGraphInstance = buildAgentGraph(researchAgent, options.checkpointer as any);
@@ -618,9 +794,9 @@ export class HybridOrchestrator {
 
       case 'writing': {
         const crew = createResearchCrew({
-          researcher: this.agents.get('general')!,
-          writer: this.agents.get('general')!,
-          reviewer: this.agents.get('general')!,
+          researcher: this.agents.get('researcher')!,
+          writer: this.agents.get('writer')!,
+          reviewer: this.agents.get('reviewer')!,
           toolRegistry: this.toolRegistry,
           memory: this.memory,
         });

@@ -30,11 +30,11 @@ mkdir -p agent-core && cd agent-core
 corepack enable
 
 # 安装所有依赖
-pnpm install --frozen-lockfile
+pnpm install
 ```
 
 **关键检查**：
-- `node >= 20.0.0`（Next.js 14 + Prisma 要求）
+- `node >= 18.17`（Next.js 15 + Drizzle ORM 要求）
 - `pnpm >= 9.0.0`（workspace 协议支持）
 - 安装完成后 `node_modules/.pnpm` 应存在且非空
 
@@ -58,11 +58,11 @@ NEXTAUTH_SECRET=dev-secret-please-change-in-production
 NEXTAUTH_URL=http://localhost:3000
 
 # === 可选：持久化存储 ===
-# POSTGRES_URL=postgresql://agentcore:password@localhost:5432/agentcore
+# DATABASE_URL=postgresql://agentcore:password@localhost:5432/agentcore
 # REDIS_URL=redis://localhost:6379
 ```
 
-> 如果暂时不需要会话持久化，可以不配 `POSTGRES_URL`。Next.js 默认将状态存于内存，重启后丢失——开发阶段完全够用。
+> 如果暂时不需要会话持久化，可以不配 `DATABASE_URL`。Next.js 默认将状态存于内存，重启后丢失——开发阶段完全够用。
 
 ### Step 3: 启动 Next.js Web
 
@@ -84,8 +84,8 @@ pnpm build && pnpm start
 ### Step 4: 启动 Electron 桌面端（可选）
 
 ```bash
-# 在前端已构建的前提下
-cd apps/electron
+# 在前端已构建的前提下，进入你使用此 Skill 构建的项目中的 Electron 目录
+# （具体路径取决于你的项目结构，例如 cd apps/electron 或 cd electron）
 pnpm dev
 ```
 
@@ -106,7 +106,7 @@ pnpm dev
 
 ## 2. 快速版 Reference 地图
 
-21 个 reference 总计 31000+ 行，无需通读。**只读以下 5 个 reference 的前半部分，即可覆盖日常 80% 的需求**：
+24 个 reference 总计 31000+ 行，无需通读。**只读以下 5 个 reference 的前半部分，即可覆盖日常 80% 的需求**：
 
 ### 2.1 01-foundation.md（读前 600 行）
 
@@ -197,7 +197,7 @@ pnpm dev
 
 | 组件 | 最低版本 | 推荐版本 | 说明 |
 |------|---------|---------|------|
-| Node.js | >= 20.0.0 | 20.x LTS | Next.js 14 + Prisma 5 要求 |
+| Node.js | >= 18.17 | 20.x LTS | Next.js 15 + Drizzle ORM 要求 |
 | pnpm | >= 9.0.0 | 9.x | workspace 协议 + lockfile v6 |
 | Docker | >= 24.0 | 25.x | Compose v2 格式 |
 | Docker Compose | >= 2.20 | 2.24+ | healthcheck + depends_on 条件 |
@@ -207,13 +207,13 @@ pnpm dev
 
 | 包名 | 最低版本 | 用途 |
 |------|---------|------|
-| next | >= 14.2.0 | Web 框架（.standalone 产物） |
+| next | >= 15.0.0 | Web 框架（.standalone 产物） |
 | react / react-dom | >= 18.3.0 | UI 框架 |
 | zod | >= 3.23.0 | 结构化输出校验 |
 | @anthropic-ai/sdk | >= 0.32.0 | Anthropic 原生客户端 |
 | openai | >= 4.56.0 | OpenAI 兼容客户端 |
 | @qdrant/js-client-rest | >= 1.11.0 | Qdrant 向量库 |
-| prisma / @prisma/client | >= 5.20.0 | 数据库 ORM |
+| drizzle-orm | >= 0.36.0 | 数据库 ORM |
 | ioredis | >= 5.4.0 | Redis 客户端（快照 + 限流） |
 | zustand | >= 4.5.0 | 前端状态管理 |
 | @opentelemetry/* | >= 1.26.0 | 可观测性 SDK |
@@ -252,7 +252,7 @@ pnpm dev
 **原因**：monorepo 内包未构建。
 **解决**：先跑 `pnpm build` 确保 `packages/core` 和 `packages/shared` 编译完成。
 
-### 问题：`POSTGRES_URL` 配了但连接失败
+### 问题：`DATABASE_URL` 配了但连接失败
 
 **原因**：PostgreSQL 未启动。
 **解决**：

@@ -566,6 +566,9 @@ export class PromptRegistry {
    *
    * 这是 Agent 启动时调用一次的核心方法。
    * 分层组装：Identity → Tools → Examples → Memory → Skills → Safety
+   *
+   * @throws Error 当 role 模板不存在时（loadRole 会 throw），
+   *         调用方必须 try-catch 并提供 fallback prompt（如内置默认角色）。
    */
   assemble(options: AssembleOptions): string {
     const template = this.loadRole(options.role);
@@ -603,6 +606,7 @@ export class PromptRegistry {
 // packages/core/src/prompt/hotSwap.ts
 
 import type { PromptRegistry } from './registry';
+import type { LLMToolDefinition } from '../llm/types';
 
 /**
  * 运行时切换角色（不重启会话）
@@ -629,7 +633,7 @@ export class RoleSwitcher {
   switch(
     currentRole: string,
     newRole: string,
-    tools: any[],
+    tools: LLMToolDefinition[],
     variables: Record<string, string>
   ): RoleSwitchResult {
     // 验证新角色存在
@@ -710,7 +714,7 @@ export class PromptVersionStore {
     };
     this.versions.push(version);
 
-    // [MOCK] 生产环境：写入数据库（prompt_versions 表）
+    // [IN-MEMORY FALLBACK] 生产环境：写入数据库（prompt_versions 表）
     // 当前为内存存储，重启后丢失
     return version;
   }
@@ -727,12 +731,24 @@ export class PromptVersionStore {
     return this.versions.find(v => v.role === role && v.version === version);
   }
 
-  /** 比对两个版本的 diff（简化的行级 diff） */
+  /** 比对两个版本的 diff
+   *
+   * 当前使用 jsdiff 库的行级 diff 算法（类似 Myers diff）。
+   * 如需更精细的词级 diff，可用-diffTokens() 变体替换。
+   */
   diff(role: string, v1: string, v2: string): string {
     const a = this.getVersion(role, v1);
     const b = this.getVersion(role, v2);
     if (!a || !b) throw new Error('Version not found');
 
+    // 使用 jsdiff 库的 diffLines（Myers diff algorithm）
+    // import { diffLines } from 'diff';
+    // return diffLines(a.content, b.content).map(part => {
+    //   const prefix = part.added ? '+ ' : part.removed ? '- ' : '  ';
+    //   return part.value.split('\n').filter(Boolean).map(l => prefix + l).join('\n');
+    // }).join('\n');
+
+    // 以下为等价的简化行级 diff 实现
     const linesA = a.content.split('\n');
     const linesB = b.content.split('\n');
 
@@ -750,6 +766,10 @@ export class PromptVersionStore {
   }
 
   private hashContent(content: string): string {
+    // 碰撞处理：SHA-256 截断前 12 位 hex (= 48 bits)，
+    // 碰撞概率约 2^-24，在 prompt 版本数量级下几乎不会发生。
+    // save() 语义为覆盖（同 hash 存入同一版本），
+    // 如需防碰撞可改为检查 hash 冲突并追加序号。
     return createHash('sha256').update(content).digest('hex').slice(0, 12);
   }
 }

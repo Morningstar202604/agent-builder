@@ -1120,6 +1120,8 @@ export class FallbackExecutor {
         }
 
         const nextProvider = fallbackChain[i + 1];
+        // onProviderSwitch 不 await——设计意图是 fire-and-forget 通知（如 toast/SSE），
+        // 异步失败不阻塞 fallback 逻辑。如果回调返回 Promise，其 rejection 不会被捕获
         onProviderSwitch?.(provider.model, nextProvider?.model ?? 'none', error.message);
 
         // 速率限制时，等待一段时间再切
@@ -1297,7 +1299,7 @@ export class CostTracker {
     await pipeline.exec();
 
     // 8. 检查预算告警（异步，不阻塞主流程）
-    this.checkBudgetAlert(tenantId, day).catch(console.error);
+    this.checkBudgetAlert(tenantId, day).catch(err => logger.warn('Budget alert check failed', err));
   }
 
   /**
@@ -1418,11 +1420,11 @@ export class ToolCallTranslator {
    */
   fromAnthropic(blocks: AnthropicContentBlock[]): ToolCall[] {
     return blocks
-      .filter((b) => b.type === 'tool_use')
+      .filter((b): b is Extract<AnthropicContentBlock, { type: 'tool_use' }> => b.type === 'tool_use')
       .map((b) => ({
-        id: (b as any).id,
-        name: (b as any).name,
-        arguments: (b as any).input, // Anthropic 已经是对象了，不需要 JSON.parse
+        id: b.id,       // Anthropic tool_use block 已定义 id 字段
+        name: b.name,   // Anthropic tool_use block 已定义 name 字段
+        arguments: b.input, // Anthropic 已经是对象了，不需要 JSON.parse
       }));
   }
 
@@ -1658,6 +1660,10 @@ interface RateLimiterResult {
  * 此时 10 个并发请求同时打向 LLM API，可能触发 RPM/TPM 的双重超限。
  * 
  * 并发限制确保：同一用户的请求串行或有限并发。
+ * 
+ * 注意：Redis Cluster 需确保同一 Tenant 的 key 在同一 slot——
+ * 使用 hash tag 模式：`{tenantId}:conc` 而非 `concurrent:{userId}`，
+ * 否则 INCR + EXPIRE 可能因跨 slot 而失败。
  */
 export class ConcurrencyLimiter {
   constructor(
@@ -1744,37 +1750,40 @@ export class BudgetGuard {
 
   async checkBudget(params: {
     tenantId: string;
+    /** 预估费用（单位：美元，内部转为美分整数计算避免浮点精度问题） */
     estimatedCost: number;
   }): Promise<{ allowed: boolean; reason?: string }> {
     const { tenantId, estimatedCost } = params;
     const day = new Date().toISOString().slice(0, 10);
 
-    // 获取今日已花费
+    // 获取今日已花费（单位：美分，整数）
     const spendKey = `spend:tenant:${tenantId}:${day}`;
-    const currentSpend = parseFloat((await this.redis.get(spendKey)) ?? '0');
+    const currentSpendCents = Math.round(parseFloat((await this.redis.get(spendKey)) ?? '0') * 100);
 
-    // 获取日预算
+    // 获取日预算（单位：美分，整数）
     const budgetKey = `budget:daily:${tenantId}`;
-    const dailyBudget = parseFloat((await this.redis.get(budgetKey)) ?? '0');
+    const dailyBudgetCents = Math.round(parseFloat((await this.redis.get(budgetKey)) ?? '0') * 100);
 
-    if (dailyBudget <= 0) {
+    const estimatedCostCents = Math.round(estimatedCost * 100);
+
+    if (dailyBudgetCents <= 0) {
       return { allowed: true }; // 无预算限制
     }
 
-    // 硬上限
-    if (currentSpend + estimatedCost >= dailyBudget) {
+    // 硬上限（整数美分比较，避免浮点精度问题）
+    if (currentSpendCents + estimatedCostCents >= dailyBudgetCents) {
       return {
         allowed: false,
-        reason: `日预算已用完 (${day}: $${currentSpend.toFixed(2)} / $${dailyBudget})。将在次日 00:00 UTC 重置。`,
+        reason: `日预算已用完 (${day}: $${(currentSpendCents / 100).toFixed(2)} / $${(dailyBudgetCents / 100).toFixed(2)})。将在次日 00:00 UTC 重置。`,
       };
     }
 
     // 软告警（80%）
-    if (currentSpend / dailyBudget >= 0.8 && currentSpend / dailyBudget < 0.85) {
+    if (currentSpendCents / dailyBudgetCents >= 0.8 && currentSpendCents / dailyBudgetCents < 0.85) {
       await this.notifier.send({
         channel: `tenant:${tenantId}:admin`,
         type: 'budget_warning',
-        content: `日预算已使用 80%：$${currentSpend.toFixed(2)} / $${dailyBudget}`,
+        content: `日预算已使用 80%：$${(currentSpendCents / 100).toFixed(2)} / $${(dailyBudgetCents / 100).toFixed(2)}`,
       });
     }
 

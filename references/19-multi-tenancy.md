@@ -419,7 +419,8 @@ export async function recordTokenUsage(
 
   // 设置月底过期（第一次写入时设 TTL）
   if (total <= inputTokens + outputTokens) {
-    await redis.expire(key, 60 * 60 * 24 * 32); // 最长 32 天
+    // 使用 31 天（最大自然月天数-1 天安全窗口），避免 32 天跨月边界误差
+    await redis.expire(key, 31 * 24 * 60 * 60);
   }
 
   return { total, exceeded: total > quota.monthlyTokenLimit };
@@ -427,6 +428,8 @@ export async function recordTokenUsage(
 
 // P1 修复：recordTokenUsage("只读"调用) 有副作用（EXPIRE 续期），
 // 明确分离读写——只读方法纯 GET 不触发任何写入。
+// 返回类型说明：total 为 number（0 表示无数据），调用方如需区分"未初始化"和"零用量"，
+// 应检查 Redis key 是否存在（exists），而非依赖 null。
 export async function getTokenUsage(
   monthKey?: string,
 ): Promise<{ total: number; exceeded: boolean }> {
@@ -810,9 +813,9 @@ export async function logAudit(entry: Omit<AuditLogEntry, 'id' | 'timestamp'>): 
 }
 
 async function sendSecurityAlert(entry: AuditLogEntry): Promise<void> {
-  // 发送到安全 webhook / Slack / 邮件
-  const { hasPermission } = await import('./rbac');
-  // 仅 owner 和 admin 收到告警
+  // HINT: 接入通知服务 (Slack webhook / PagerDuty / Email) 替换 console.warn
+  // 安全事件不应仅停留在日志——需要实时触达 on-call 工程师
+  // 建议：接入安全事件管理系统（SIEM/Slack/Email），按 riskScore 分级通知
   console.warn(`[SECURITY ALERT] Tenant ${entry.tenantId}: ${entry.action} by ${entry.userId}`);
 }
 
@@ -983,11 +986,12 @@ export async function GET(req: NextRequest) {
   // TODO: 正确方案是在 LLM 调用链路中分别追踪 input/output token，
   // 并通过独立 Redis key 存储（如 usage:input_tokens:{tenantId}:{monthKey}）。
   // 在精确追踪上线前，返回 null 并标注"数据不可用"。
+  // 返回类型 interface: { inputTokens: number | null; outputTokens: number | null; apiCalls: number; toolCalls: number }
   return NextResponse.json({
     period: monthKey,
     usage: {
-      inputTokens: null, // 数据不可用：未实现独立追踪
-      outputTokens: null, // 数据不可用：未实现独立追踪
+      inputTokens: null as number | null, // 数据不可用：未实现独立追踪
+      outputTokens: null as number | null, // 数据不可用：未实现独立追踪
       apiCalls: Number(apiCalls ?? 0),
       toolCalls: Number(toolCalls ?? 0),
     },

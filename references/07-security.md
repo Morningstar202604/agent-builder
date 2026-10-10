@@ -204,10 +204,17 @@ export function wrapUserInput(userInput: string): string {
  * 即使注入挡住了，LLM 偶尔也会复读你的 instructions。
  */
 export function detectPromptLeak(output: string, systemPrompt: string): boolean {
-  // 取 system prompt 的前 200 字符做指纹匹配
-  const fingerprint = systemPrompt.slice(0, 200).trim();
-  if (fingerprint.length < 20) return false;
-  return output.includes(fingerprint);
+  // 取 system prompt 的前 200 字符做指纹匹配前，先做 normalized 处理：
+  // 1. strip 常见问候语（如 "You are a helpful assistant"）避免误判
+  // 2. trim 多余空白 + 小写化
+  const normalized = systemPrompt
+    .slice(0, 200)
+    .trim()
+    .toLowerCase()
+    .replace(/^you are (a|an)\s+(helpful|an?\s+)?assistant\.?\s*/i, '');
+
+  if (normalized.length < 20) return false;
+  return output.toLowerCase().includes(normalized);
 }
 ```
 
@@ -510,7 +517,7 @@ export class SandboxMonitor {
  * Docker seccomp profile: 默认拒绝 inet 连接 + 文件写入。
  * 把它放进 server/seccomp-profile.json。
  */
-export const DEFAULT_SECCOMP_PROFILE = {
+export const DEFAULT_SECCOMP_PROFILE = Object.freeze({
   defaultAction: 'SCMP_ACT_ALLOW',
   syscalls: [
     {
@@ -526,7 +533,7 @@ export const DEFAULT_SECCOMP_PROFILE = {
       action: 'SCMP_ACT_KILL',  // 内核级操作直接杀死
     },
   ],
-};
+});
 
 /**
  * AppArmor profile —— 作为 seccomp 的补充层。
@@ -570,9 +577,9 @@ profile agentcore-sandbox flags=(attach_deleted,mediate_deleted) {
 `;
 
 // Step 3c: 将 seccomp profile 序列化为 JSON 文件并挂载到 Docker
+import { writeFile } from 'node:fs/promises';
 export function writeSeccompProfile(outputPath: string): void {
-  const fs = require('fs') as typeof import('fs');
-  fs.writeFileSync(outputPath, JSON.stringify(DEFAULT_SECCOMP_PROFILE, null, 2), 'utf-8');
+  void writeFile(outputPath, JSON.stringify(DEFAULT_SECCOMP_PROFILE, null, 2), 'utf-8');
 }
 
 // Step 3d: 使用这个 profile 启动沙箱容器
@@ -618,7 +625,7 @@ export function buildSandboxDockerArgs(
 // server/src/security/tenant-isolation.ts
 
 import { promises as fs } from 'fs';
-import { join, resolve } from 'path';
+import { join, resolve, sep } from 'path';
 import { createHash } from 'crypto';
 
 export interface TenantWorkspace {
@@ -682,8 +689,8 @@ export function isPathWithinWorkspace(targetPath: string, workspacePath: string)
   const resolved = resolve(targetPath);
   const resolvedBase = resolve(workspacePath);
   // 使用 path.sep 兼容 Windows(\) 和 POSIX(/)
-  const sep = path.sep;
-  return resolved.startsWith(resolvedBase + sep) || resolved === resolvedBase;
+  const pathSep = sep;
+  return resolved.startsWith(resolvedBase + pathSep) || resolved === resolvedBase;
 }
 
 /**
@@ -892,11 +899,13 @@ export function SecurityCenter() {
   const [autoBlock, setAutoBlock] = useState(true);
 
   useEffect(() => {
+    const ctrl = new AbortController();
     // 从后端拉取最近的安全事件
-    fetch('/api/security/events')
+    fetch('/api/security/events', { signal: ctrl.signal })
       .then((r) => r.json())
       .then((data) => setEvents(data.events))
       .catch(() => {});
+    return () => ctrl.abort();
   }, []);
 
   // 统计风险分布

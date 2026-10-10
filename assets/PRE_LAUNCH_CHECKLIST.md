@@ -21,7 +21,7 @@
 
 ## 1. 安全（Security）
 
-> 核心参考：`07-security.md`、`04-sandbox.md`、`19-multi-tenancy.md`、`10-prompt-protocol.md`、`15-knowledge-base.md`
+> 核心参考: `07-security.md`, `04-sandbox.md`, `19-multi-tenancy.md`, `10-prompt-protocol.md`, `15-knowledge-base.md`
 
 ### 1.1 输入侧防护
 
@@ -353,7 +353,7 @@
 
 - [ ] **`contextIsolation: true` 已启用**
   - preload 脚本不直接暴露 Node.js API
-  - 渲染进程无法直接访问 `require`) / `process` / `fs`
+  - 渲染进程无法直接访问 `require` / `process` / `fs`
   - 见 `01-foundation.md` § 1.7 — preload 安全 IPC
 
 - [ ] **`nodeIntegration: false` + `sandbox: true` 双件套**
@@ -416,7 +416,7 @@
 - [ ] **审计日志已启用并持久化**
   - 记录所有敏感操作（数据删除 / 权限变更 / 工具执行）
   - 审计日志包含：操作人 / 时间 / 操作类型 / 对象 ID / 结果
-  - 审计日志存储在独立 schemare 防篡改
+  - 审计日志存储在独立 schema 防篡改
   - 见 `19-multi-tenancy.md` § 6. 跨租户审计日志
 
 ### 6.3 敏感数据
@@ -513,8 +513,8 @@
 | 19 | multi-tenancy.md | 租户隔离 + RBAC + 配额 + 审计 + 计费 | ~500 |
 | 20 | agent-marketplace.md | 发布 API + 安全扫描 + 评分 + 分成 | ~500 |
 | 21 | fault-recovery.md | 状态快照 + 断线重连 + 幂等 + 降级 + 超时 | ~500 |
-| 22 | guardrails-tracing.md | Guardrails + LangSmith 追踪 + 审计轨迹 | ~500 |
-| 23 | artifacts-computer-use.md | 沙箱文件产物 + Computer Use + 可视化输出 | ~500 |
-| 24 | product-layer.md | 产品设计 + 商业模式 + 迭代路线图 | ~500 |
+| 22 | guardrails-tracing.md | Guardrails + LangSmith 追踪 + 审计轨迹 | ~3000 |
+| 23 | artifacts-computer-use.md | 沙箱文件产物 + Computer Use + 可视化输出 | ~3700 |
+| 24 | product-layer.md | 产品设计 + 商业模式 + 迭代路线图 | ~3300 |
 
 > 本清单覆盖 7 大维度共 **75 项**检查点。每项标注对应 reference 章节，修复时直接定位到具体文件。

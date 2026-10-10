@@ -226,6 +226,13 @@ CMD ["node", "server.js"]
 
 ```nginx
 # deploy/nginx.conf
+# 工程注意：本文件假设被 include 进主 nginx.conf 的 http {} 块内，
+# 因此 upstream / server 块直接声明，无需重复包裹 http {}。
+# limit_req_zone 必须在 http 块内（不能在 server 块内），
+# 故放在此文件最顶部（被 include 进 http 块后即为 http 上下文）。
+
+limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
+limit_req_zone $binary_remote_addr zone=sse:10m rate=2r/s;  # SSE 专用：聊天请求低频长连接
 
 upstream web_backend {
     server web:3000;
@@ -286,10 +293,6 @@ server {
     location / {
         proxy_pass http://web_backend;
     }
-
-    # === 速率限制 —— 防爬 ===
-    limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
-    limit_req_zone $binary_remote_addr zone=sse:10m rate=2r/s;  # SSE 专用：聊天请求低频长连接
 }
 ```
 
@@ -534,7 +537,7 @@ async function getAWSSecret(secretArn: string, key: string): Promise<string | un
       return parsed[key];
     }
   } catch {
-    // 降级
+    logger.warn('Secret fallback to next provider', { provider: 'aws', key });
   }
   return undefined;
 }
@@ -547,6 +550,7 @@ async function getVaultSecret(key: string): Promise<string | undefined> {
     const data = await res.json();
     return data.data?.data?.[key];
   } catch {
+    logger.warn('Secret fallback to next provider', { provider: 'vault', key });
     return undefined;
   }
 }
@@ -571,7 +575,7 @@ export async function validateSecrets(): Promise<{ missing: string[]; ok: boolea
   }
 
   if (missing.length > 0) {
-    console.error(`❌ Missing required secrets: ${missing.join(', ')}`);
+    logger.error(`Missing required secrets: ${missing.join(', ')}`);
     process.exit(1);  // fail-fast：缺少 secret 时绝不启动
   }
 
@@ -737,6 +741,7 @@ module.exports = {
 ```bash
 #!/bin/bash
 # scripts/sign-and-notarize.sh
+set -euo pipefail
 
 # macOS Electron 必须有签名+公证才能在用户电脑上运行。
 # 没有签名的 App 会被 Gatekeeper 拦截，用户看到 "无法打开，来自身份不明的开发者"
@@ -865,7 +870,7 @@ echo "✅ Windows 签名完成"
 🔗 **工程逻辑**：回滚不是简单的"docker compose 启动旧版本"——你需要确保：(1) 旧版本镜像还在 registry 里没被 purge；(2) 数据库 migration 向前兼容（新 schema 旧代码能用）；(3) 回滚后前端静态资源也适配旧版 API。最安全的回滚方式是蓝绿部署：新/旧版本同时运行，通过 Nginx upstream 切换流量。但 Docker Compose 场景下，用 image tag 切换更简单——`docker compose up -d --image web:old-sha`。
 
 ```tsx
-// apps/web/src/components/deploy/DeployStatus.tsx
+// apps/web/src/components/deploy/DeployStatusPanel.tsx
 
 'use client';
 

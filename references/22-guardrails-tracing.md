@@ -344,7 +344,7 @@ export class InputGuardrailRunner<TContext = unknown> {
         const r = settledResults[i];
         if (r.status === 'rejected') {
           // 超时或 abort —— 不阻断（fail-open），记录日志
-          console.warn(`[InputGuardrail] '${parallelGuardrails[i].name}' ${r.reason}`);
+          logger.warn(`[InputGuardrail] '${parallelGuardrails[i].name}' ${r.reason}`);
           continue;
         }
         if (r.value.tripwire_triggered) {
@@ -1132,7 +1132,7 @@ export function createDefaultGuardrailPipeline<TContext>(): GuardrailPipeline<TC
 
   // Output：串行 —— 必须确保在返回用户前拦截
   pipeline.addOutputGuardrail('data-leak', dataLeakageGuardrail as OutputGuardrailFn<TContext>, '输出包含敏感信息，已拦截。');
-  pipeline.addOutputGuardrail('toxicity', toxicityGuardrail as OutputGuardrailFn<TContent>, '输出包含不当内容，已拦截。');
+  pipeline.addOutputGuardrail('toxicity', toxicityGuardrail as OutputGuardrailFn<TContext>, '输出包含不当内容，已拦截。');
 
   // Tool：绑定到具体工具
   pipeline.addToolBundle({
@@ -1638,7 +1638,7 @@ export class AgentTracer {
       await this.exporter.export(batch);
     } catch (error) {
       // 追踪失败不阻塞主流程——只写日志
-      console.error('[AgentTracer] Failed to export batch:', error);
+      logger.error('[AgentTracer] Failed to export batch:', error);
 
       // 有限次重试
       if (batch.length < 100) {
@@ -1654,6 +1654,11 @@ export class AgentTracer {
       clearTimeout(this.flushTimer);
     }
     // 最后 flush 一次
+    // 防止 buffer 无限增长——如果 exporter 持续失败，丢弃最早的 batch 避免 OOM
+    if (this.batchBuffer.length > 500) {
+      logger.error(`[AgentTracer] Buffer overflow (${this.batchBuffer.length} batches), dropping oldest to 400`);
+      this.batchBuffer.splice(400);
+    }
     while (this.batchBuffer.length > 0) {
       await this.flush();
     }
@@ -2796,7 +2801,7 @@ export class AgentRunner {
       await hooks.fireAgentStart(context, agentName, sessionId);
 
       // === 3. Input Guardrail (仅第一个 agent) ===
-      const inputSpan = rootSpan.startChild('gen_ai.guardrail' as any);
+      const inputSpan = rootSpan.startChild(AgentSpanType.GUARDRAIL);
       try {
         await guardrails.getInputRunner().run(
           {
@@ -2819,10 +2824,12 @@ export class AgentRunner {
         totalTurns++;
 
         // LLM 调用
-        const llmSpan = rootSpan.startChild('gen_ai.llm.call' as any);
+        const llmSpan = rootSpan.startChild(AgentSpanType.LLM_CALL);
         let llmOutput: { content: string; toolCalls: any[] };
         try {
           // 模拟 LLM 调用（实际由 LLMClient 执行）
+          // TODO: 实际项目中此处由 Runner 类注入的 LLMClient 执行，不是真正的模拟——
+          // 当前注释有误导性。应在抽象类中明确标注 `abstract callLLM()` 由子类实现。
           llmOutput = await this.callLLM(session.messages, context);
           const cost = this.config.costTracker.record(
             'gpt-4o',
@@ -2862,7 +2869,7 @@ export class AgentRunner {
 
         // 工具调用循环
         for (const tc of llmOutput.toolCalls) {
-          const toolSpan = rootSpan.startChild('gen_ai.tool.call' as any);
+          const toolSpan = rootSpan.startChild(AgentSpanType.TOOL_CALL);
           try {
             // Tool Input Guardrail
             await guardrails.getToolRegistry().runInputGuardrails(

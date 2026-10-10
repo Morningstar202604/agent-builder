@@ -53,11 +53,13 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }, { threshold: 0.5 });
 
-    statNums.forEach(el => statsObserver.observe(el));
+    statNums.forEach(el => {
+        if (el.dataset.count) statsObserver.observe(el);
+    });
 
     function animateValue(el) {
-        const text = el.textContent;
-        const num = parseInt(text);
+        const target = el.dataset.count || el.textContent;
+        const num = parseInt(target, 10);
         if (isNaN(num)) return;
         let current = 0;
         const step = Math.max(1, Math.floor(num / 30));

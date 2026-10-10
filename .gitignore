@@ -10,7 +10,8 @@ build/
 *.swp
 *.swo
 *.bak
-.Release
+# .Release — case insensitive match for Windows/Linux builds
+[Rr]elease
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -26,5 +27,6 @@ coverage/
 *.tsbuildinfo
 package-lock.json
 yarn.lock
+Thumbs.db
 .env.production
 .env.staging

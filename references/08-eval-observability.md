@@ -514,12 +514,21 @@ export class EvalRunner {
    * 比如 eval 里需要测试 "用户问天气，Agent 调 get_weather 工具" 的逻辑，
    * 但不想真的去调天气 API（慢 + 花钱 + 结果不确定）。
    */
-  private createTestConversation(evalCase: EvalCase, llm: any) {
-    const { Conversation } = require('@agentcore/agent/conversation');
+  private async createTestConversation(evalCase: EvalCase, llm: any) {
+    const { Conversation } = await import('@agentcore/agent/conversation');
     const conv = new Conversation({
       systemPrompt: evalCase.input.systemPrompt ?? 'You are a helpful assistant.',
       llm,
-      tools: [],  // 可以用 toolFixtures 工具替换
+      tools: evalCase.input.toolFixtures?.length
+        ? Array.from(evalCase.input.toolFixtures.entries()).map(([name, fn]) => ({
+            name,
+            description: `Mock tool: ${name}`,
+            parameters: { type: 'object', properties: {} },
+            async execute(args: Record<string, unknown>) {
+              return fn(args);
+            },
+          }))
+        : [],
     });
 
     return conv;
@@ -676,6 +685,8 @@ export async function multiJudge(
 1. **Judge Prompt 里有"请输出 JSON"但没剥 markdown**：LLM 经常输出 ```json { ... } ```，直接 JSON.parse 失败。必须先 `replace(/```json\n?/g, '')`。
 2. **Judge Prompt 暗示了正确答案**：比如 "这个回答是否满足正确回答的基本要求？" 已经暗含"应该满足"。Prompt 必须是中立提问。
 3. **eval 数据集太大导致跑一次成本爆炸**：300 条 eval 用例 × 多 Judge × 每次调用被测模型，一次跑完可能要 $50+。需要加缓存——相同输入直接取缓存结果。
+4. **eval 并发过高触发 Judge API rate limit**：多个 eval case 并发调用 Judge LLM 时容易触发 rate limit。建议控制 concurrency=3 并加重试/退避逻辑。金丝雀方案：先跑 5 条确认 API 响应时间再放全量。
+5. **前端全量渲染 eval 事件不做虚拟化的性能陷阱**：300 条 eval 用例 × 每个 10+ 事件 = 3000+ DOM 节点。在 EvalDashboard 用例详情展开时，生产环境必须用 @tanstack/react-virtual 虚拟化长列表。
 
 ---
 
@@ -699,7 +710,10 @@ export interface RegressionResult {
   overallDelta: number;
 }
 
-const REGRESSION_THRESHOLD = 1.5;  // 分数下降超过 1.5 分视为回归
+// 可通过环境变量 REGRESSION_THRESHOLD 覆盖。含义：当 eval case 的分数下降超过此阈值时，
+// 视为性能回归。值越小越敏感（更容易触发 CI 失败），值越大越宽松。默认 1.5 表示下降 1.5 分。
+// 示例：REGRESSION_THRESHOLD=2.0 pnpm eval
+const REGRESSION_THRESHOLD = parseFloat(process.env.REGRESSION_THRESHOLD ?? '1.5');
 
 export function detectRegression(
   currentReport: EvalReport,
@@ -1724,14 +1738,17 @@ interface TokenUsageData {
 export function ObservabilityPanel() {
   const [range, setRange] = useState<'1h' | '24h' | '7d'>('24h');
   const [data, setData] = useState<TokenUsageData | null>(null);
+  const [error, setError] = useState<string | null>(null);  // UI 错误状态
 
   useEffect(() => {
+    setError(null);
     fetch(`/api/observability/tokens?range=${range}`)
       .then((r) => r.json())
       .then(setData)
-      .catch(() => {});
+      .catch((err) => setError(err instanceof Error ? err.message : '加载失败'));
   }, [range]);
 
+  if (error) return <div className="p-6 text-red-400">加载失败: {error}</div>;
   if (!data) return <div className="p-6 text-muted">加载中...</div>;
 
   return (

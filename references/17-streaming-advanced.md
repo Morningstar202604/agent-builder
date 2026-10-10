@@ -339,6 +339,10 @@ export class SubTokenStreamer {
 
   /** 流结束，把剩余 buffer 全部推走 */
   finish(): void {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
     this.flush();
   }
 
@@ -481,6 +485,9 @@ export class ResilientSSEClient {
     onRetry?: (chunks: string[]) => void;
     onError?: (error: Event) => void;
   }): void {
+    // 清理旧 EventSource，防止重复连接导致内存泄漏和事件重复投递
+    this.disconnect();
+
     const urlWithId = this.lastReceivedId > 0
       ? `${url}&last_id=${this.lastReceivedId}`
       : url;
@@ -786,12 +793,13 @@ export function useStreamRenderer(options?: {
     timerRef.current = setTimeout(() => {
       timerRef.current = null;
 
-      if (useIdle && 'requestIdleCallback' in window) {
-        // requestIdleCallback：只在浏览器空闲时渲染
-        rafRef.current = (window as any).requestIdleCallback(() => {
+      if (useIdle) {
+        // requestIdleCallback：只在浏览器空闲时渲染（带 fallback 的类型安全写法）
+        const idleCallback = (window.requestIdleCallback ?? ((cb: () => void) => setTimeout(cb, 1))) as (cb: () => void) => number;
+        rafRef.current = idleCallback(() => {
           onRender(bufferRef.current);
           pendingUpdateRef.current = false;
-        });
+        }) as unknown as number;
       } else {
         // 降级为 RAF：保证与浏览器刷新率同步
         rafRef.current = requestAnimationFrame(() => {

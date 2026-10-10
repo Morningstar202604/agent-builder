@@ -6,7 +6,7 @@
 [![参考资料: 24 节点](https://img.shields.io/badge/参考资料-24%20节点-green.svg)](references/)
 [![中英双语](https://img.shields.io/badge/语言-中文%2FEnglish-orange.svg)](README.en.md)
 
-[English Docs](README.en.md) · [中文文档](README.zh.md)
+[English Docs](README.en.md)
 
 ---
 

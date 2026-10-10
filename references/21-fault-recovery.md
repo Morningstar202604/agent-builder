@@ -195,7 +195,7 @@ export class SnapshotManager {
       });
     } catch (e) {
       // 序列化失败——降级：只保存 messages 和基础信息
-      console.error(`Snapshot serialization failed for ${snapshot.sessionId}`, e);
+      logger.error(`Snapshot serialization failed for ${snapshot.sessionId}`, e);
       const minimal: Partial<AgentSnapshot> = {
         version: snapshot.version,
         sessionId: snapshot.sessionId,
@@ -205,7 +205,7 @@ export class SnapshotManager {
         pendingToolCall: null,
         context: {
           tokenBudgetUsed: 0,
-          toolCallCount: context?.toolCallCount ?? 0,
+          toolCallCount: snapshot.context?.toolCallCount ?? 0,
           activeSkillIds: [],
           memoryKeys: [],
           currentIntent: null,
@@ -274,7 +274,8 @@ export abstract class AbstractAgent {
     // 异步写入 Redis，不阻塞下一步工具调用
     this.snapshotManager.save(snapshot).catch((e) => {
       // 快照失败不能阻断 Agent 执行——只记录警告
-      console.warn('[Snapshot] Save failed:', e.message);
+      // 注意：快照失败不影响主流程，但用户恢复时可能获得过期会话
+      logger.warn('[Snapshot] Save failed:', e.message);
     });
   }
 
@@ -830,7 +831,7 @@ export class FailoverLLMClient implements LLMClient {
 
         return result;
       } catch (e) {
-        console.warn(`[Failover] ${tier.name} failed:`, (e as Error).message);
+        logger.warn(`[Failover] ${tier.name} failed:`, (e as Error).message);
         this.currentTierIndex = i + 1;
       }
     }
@@ -871,7 +872,7 @@ export class FailoverLLMClient implements LLMClient {
           };
         }
 
-        console.warn(`[Failover Stream] ${tier.name} failed mid-stream:`, (e as Error).message);
+        logger.warn(`[Failover Stream] ${tier.name} failed mid-stream:`, (e as Error).message);
         this.currentTierIndex = i + 1;
       }
     }
@@ -884,11 +885,14 @@ export class FailoverLLMClient implements LLMClient {
    *
    * 不立即切回是因为：如果 quota 被耗光，切回去也还是 429。
    * 等一分钟让配额恢复（大多数 API 配额是每分钟/每小时周期）。
+   *
+   * 注意：serverless 环境（如 Vercel Edge）setTimeout 超过 60s 会被清除，
+   * 建议改用外部 scheduler（如 Upstash QStash）触发恢复。
    */
   private scheduleRecovery(): void {
     setTimeout(() => {
       this.currentTierIndex = 0;
-      console.log('[Failover] Attempting to recover to primary model');
+      logger.info('[Failover] Attempting to recover to primary model');
     }, 60_000);
   }
 
@@ -1136,6 +1140,10 @@ export function classifyError(error: unknown): RecoveryAction {
   }
 
   // Quota exceeded
+  // 注意：403 在不同 provider 语义不同：
+  // - Anthropic: billing disabled / quota exhausted → 非限流性质 → non_retryable_quota
+  // - OpenAI: 403 通常是 API key invalid / model not allowed → 应走 non_retryable_auth
+  // 本项目以 Anthropic 语义为准：403 = quota 耗尽（非限流），模型无效用 401 表示
   if (status === 403) {
     return {
       category: 'non_retryable_quota',

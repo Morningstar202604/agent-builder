@@ -693,6 +693,7 @@ class MarkdownCompiler implements ArtifactCompiler {
     const container = document.createElement('div');
     container.className = 'artifact-markdown-body';
     // 使用 marked + DOMPurify 渲染
+    // HINT: 推荐使用 react-markdown + rehype-highlight 等成熟库实现
     // container.innerHTML = DOMPurify.sanitize(marked.parse(ctx.artifact.content.raw));
     return { element: container };
   }
@@ -703,6 +704,7 @@ class MermaidCompiler implements ArtifactCompiler {
     const container = document.createElement('div');
     container.className = 'artifact-mermaid';
     // 使用 mermaid.js 在浏览器端渲染图表
+    // HINT: 推荐使用 @anthropic-ai/claude-code-react 或 mermaid 官方库
     // mermaid.render('mermaid-' + Date.now(), ctx.artifact.content.raw);
     return { element: container };
   }
@@ -713,6 +715,7 @@ class CodeCompiler implements ArtifactCompiler {
     const pre = document.createElement('pre');
     pre.className = `artifact-code language-${ctx.artifact.content.language ?? 'unknown'}`;
     // 使用 Prism.js 或 Shiki 做语法高亮
+    // HINT: 推荐使用 Shiki (shiki) 语法高亮——基于 TextMate grammars，与 VS Code 同引擎
     // pre.innerHTML = highlightCode(ctx.artifact.content.raw, ctx.artifact.content.language);
     return { element: pre };
   }
@@ -723,6 +726,7 @@ class JSONCompiler implements ArtifactCompiler {
     const container = document.createElement('div');
     container.className = 'artifact-json-viewer';
     // 使用 react-json-view 或类似组件
+    // HINT: 推荐使用 @uiw/react-json-view 或 react-json-view-lite 实现可交互 JSON 树
     return { element: container };
   }
 }
@@ -732,6 +736,7 @@ class CSVCompiler implements ArtifactCompiler {
     const container = document.createElement('div');
     container.className = 'artifact-csv-viewer';
     // 使用 handsontable 或 ag-grid 渲染可编辑表格
+    // HINT: 推荐使用 @tanstack/react-table 或 papaparse + 自定义虚拟滚动表格
     return { element: container };
   }
 }
@@ -1514,7 +1519,8 @@ export class SafetyGuard {
     // 检查是否需要确认
     if (this.policy.confirmActions.includes(action.type)) {
       const needsConfirmation = this.policy.requireConfirmationPatterns.some((p) => {
-        const text = action.type === 'type' ? (action as any).text : context.pageText || '';
+        // 始终使用 String() 包装避免 undefined 传入 RegExp.test()
+        const text = action.type === 'type' ? String((action as any).text ?? '') : String(context.pageText ?? '');
         return p.test(text);
       });
 
@@ -1617,6 +1623,28 @@ export class PlaywrightComputerAdapter {
         case 'key':
           await this.page.keyboard.press(action.text);
           return { success: true };
+
+        case 'double_click':
+          await this.page.mouse.dblclick(action.x, action.y);
+          return { success: true };
+
+        case 'triple_click':
+          // Playwright 没有原生 triple_click，模拟三次快速点击
+          await this.page.mouse.click(action.x, action.y, { clickCount: 3 });
+          return { success: true };
+
+        case 'drag': {
+          const path = (action as any).path as Array<{ x: number; y: number }>;
+          if (path && path.length >= 2) {
+            await this.page.mouse.move(path[0].x, path[0].y);
+            await this.page.mouse.down();
+            for (let i = 1; i < path.length; i++) {
+              await this.page.mouse.move(path[i].x, path[i].y);
+            }
+            await this.page.mouse.up();
+          }
+          return { success: true };
+        }
 
         case 'scroll':
         case 'scroll_down':
@@ -3589,7 +3617,8 @@ export class SubAgentOrchestrator {
     recommendations: string[];
     hasConflicts: boolean;
   } {
-    const allOutputs = Array.from(this.results.values())
+    // 使用参数 results（而非 this.results）——results 是本次 leadCoordination 调用的上下文
+    const allOutputs = Array.from(results.values())
       .filter((r) => r.status === 'completed')
       .map((r) => r.output);
 

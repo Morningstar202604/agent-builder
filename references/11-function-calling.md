@@ -654,7 +654,7 @@ export class ParallelToolDispatcher {
     const results: PromiseSettledResult<unknown>[] = new Array(calls.length);
     let nextIndex = 0;
 
-    async function worker(this: ParallelToolDispatcher): Promise<void> {
+    const workerFn = async (): Promise<void> => {
       while (nextIndex < calls.length) {
         const i = nextIndex++;
         const call = calls[i];
@@ -671,10 +671,24 @@ export class ParallelToolDispatcher {
           results[i] = { status: 'rejected', reason: error };
         }
       }
-    }
+    };
+
+    // Worker 异常退出后重新创建，防止剩余 tasks 永久 pending
+    const ensureWorker = async (): Promise<void> => {
+      while (nextIndex < calls.length) {
+        try {
+          await workerFn();
+        } catch (e) {
+          // Worker 异常（非工具执行错误）：重新创建 worker 继续执行
+          logger.warn('ParallelToolDispatcher worker crashed, restarting...', { error: String(e) });
+          continue;
+        }
+        break;
+      }
+    };
 
     const workerCount = Math.min(maxConcurrency, calls.length);
-    const workers = Array.from({ length: workerCount }, () => worker.call(this));
+    const workers = Array.from({ length: workerCount }, () => ensureWorker());
     await Promise.all(workers);
 
     return results;
@@ -796,9 +810,9 @@ export class ToolCallAuditLogger {
     return this.entries
       .filter(e =>
         (!params.sessionId || e.sessionId === params.sessionId) &&
-        (!params.toolName || e.toolName === params.toolName) ||
-        (!params.status || e.status === params.status) ||
-        (!params.from || e.timestamp >= params.from) ||
+        (!params.toolName || e.toolName === params.toolName) &&
+        (!params.status || e.status === params.status) &&
+        (!params.from || e.timestamp >= params.from) &&
         (!params.to || e.timestamp <= params.to)
       )
       .slice(0, params.limit ?? 1000);

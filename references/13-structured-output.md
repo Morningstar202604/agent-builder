@@ -16,7 +16,7 @@
 
 ---
 
-## 问题拆解：LLM 输出 JSON 的 12 种失败场景
+## 0. 问题拆解：LLM 输出 JSON 的 12 种失败场景
 
 **工程逻辑**：大部分 Agent 系统的 tool_call 依赖 LLM 输出结构化 JSON。但 LLM 不是 JSON 生成器——它输出的是"看起来像 JSON 的文本"。理解和分类失败场景是设计可靠 retry 机制的前提。
 
@@ -130,7 +130,7 @@ ${JSON.stringify(jsonSchema, null, 2)}
 
 Output ONLY the JSON object, nothing else.`;
 
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {  // 最多调用 maxRetries+1 次（1 次初始 + N 次重试）
       // 4. 调用 LLM
       const rawResponse = await this.callModel(systemPrompt, userMessage, jsonSchema);
       rawResponses.push(rawResponse);
@@ -576,6 +576,8 @@ function tryRepairParse(text: string): Record<string, unknown> | unknown[] | nul
     (t: string) => t.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":'),
 
     // 修复 4: 控制字符（null, newline, tab 在字符串中未转义）
+    // 注意：此正则仅处理 literal 控制字符（\n \r \t），不影响转义序列 \\n \\r \\t
+    // 正则匹配引号或转义符之后、下一个引号之前出现的裸控制字符
     (t: string) => t.replace(/(["\])[(][^"\][(]*?)([\n\r\t])/g, (match, prefix, content, control) => {
       const escaped = control === '\n' ? '\\n' : control === '\r' ? '\\r' : control === '\t' ? '\\t' : control;
       return prefix + content + escaped;
@@ -615,8 +617,17 @@ function tryRepairParse(text: string): Record<string, unknown> | unknown[] | nul
   }
 }
 
-/** 构建"无法解析"的错误对象 */
-function createParseError(raw: string): any {
+/** 构建"无法解析"的错误对象（ZodError 兼容结构） */
+interface ParseError {
+  issues: Array<{
+    code: string;
+    message: string;
+    path: string[];
+    received: string;
+  }>;
+}
+
+function createParseError(raw: string): ParseError {
   return {
     issues: [{
       code: 'custom',
@@ -624,7 +635,7 @@ function createParseError(raw: string): any {
       path: [],
       received: raw.slice(0, 200) + (raw.length > 200 ? '...' : ''),
     }],
-  } as any;
+  };
 }
 ```
 
@@ -660,7 +671,7 @@ export function formatZodError(error: z.ZodError): string[] {
       case 'invalid_string':
         return `Field "${path}": invalid format (${issue.validation})`;
       case 'invalid_enum_value':
-        return `Field "${path}": must be one of [${issue.options?.join(', ')}], got "${issue.received}"`;
+        return `Field "${path}": must be one of [${issue.options?.join(', ') ?? 'unknown options'}], got "${issue.received}"`;
       case 'unrecognized_keys':
         return `Unknown field(s): ${issue.keys.join(', ')}`;
       default:

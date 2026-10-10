@@ -475,7 +475,7 @@ export class ElevenLabsTTSProvider implements TTSProvider {
  * - 维护一个播放队列，确保不重读、不漏读
  * - 当用户发送新消息时，立即停止当前播放（中断）
  */
-export class TTSManger {
+export class TTSManager {
   private provider: TTSProvider;
   private isPlaying = false;
   private queue: string[] = [];
@@ -631,15 +631,9 @@ export class WebSpeechSTTProvider implements STTProvider {
    * 这里封装为单次录音转写接口
    */
   async transcribe(audioBuffer: Buffer, options?: STTOptions): Promise<STTResult> {
-    // Web Speech API 不支持直接传入 audio buffer
-    // 实际实现需要 MediaRecorder API 实时录音
-    // 这里提供接口定义
-    return {
-      text: '',
-      language: options?.language || 'en',
-      duration: 0,
-      confidence: 0,
-    };
+    // Web Speech API 不支持直接传入 buffer —— 生产路径中应 throw Error
+    // 让上层 fallback 到 Whisper API 等支持 buffer 转写的 Provider
+    throw new Error('Web Speech API does not support buffer transcription. Use startStreaming() for real-time recognition.');
   }
 
   /** 开始实时语音识别（流式返回中间结果） */
@@ -686,6 +680,16 @@ export class WebSpeechSTTProvider implements STTProvider {
 
 ```typescript
 // packages/core/src/multimodality/screenRecording.ts
+
+// 缓存 sharp import，处理 ESM/CJS 互操作风险
+// sharp 在 CJS 环境下 default export 是 sharp 函数本身，ESM 下需要 .default
+let sharpLib: typeof import('sharp') | null = null;
+async function getSharp() {
+  if (!sharpLib) {
+    const mod = await import('sharp');
+    sharpLib = (mod as any).default ?? mod;
+  }
+  return sharpLib;
 
 /**
  * 屏幕录制 Agent —— 定时截图，对比变化，触发 Agent 决策
@@ -782,11 +786,11 @@ export class ScreenRecorder {
    * 生产级可用结构化相似性（SSIM）算法替代
    */
   private async compareFrames(frameA: Buffer, frameB: Buffer): Promise<number> {
-    const sharp = await import('sharp');
+    const sharp = await getSharp();
 
     const [metaA, metaB] = await Promise.all([
-      sharp.default(frameA).metadata(),
-      sharp.default(frameB).metadata(),
+      sharp(frameA).metadata(),
+      sharp(frameB).metadata(),
     ]);
 
     if (metaA.width !== metaB.width || metaA.height !== metaB.height) {
@@ -796,8 +800,8 @@ export class ScreenRecorder {
     // 缩缩略图后做逐像素比较（减少计算量）
     const size = 64;
     const [bufA, bufB] = await Promise.all([
-      sharp.default(frameA).resize(size, size).raw().toBuffer(),
-      sharp.default(frameB).resize(size, size).raw().toBuffer(),
+      sharp(frameA).resize(size, size).raw().toBuffer(),
+      sharp(frameB).resize(size, size).raw().toBuffer(),
     ]);
 
     let diffSum = 0;
@@ -978,6 +982,10 @@ export function MediaChatInput({ onSend }: MediaChatInputProps) {
 
   /** 开始录音 */
   const startRecording = useCallback(async () => {
+    // 防止 onstop 回调重复注册：如果已有录音先 stop cleanup
+    if (mediaRecorderRef.current?.state === 'recording') {
+      mediaRecorderRef.current.stop();
+    }
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
     mediaRecorderRef.current = mediaRecorder;
@@ -1340,7 +1348,7 @@ function GeneratedImage({ base64, prompt }: { base64: string; prompt: string }) 
 }
 ```
 
-> 🤖 **AI 常见错误**：音频消息还没播完就发下一条。如果 Agent 的回复还没播放完毕，用户就发送了新消息（或 Agent 自己的下一条回复触发了新的 TTS），需要：1) 立即停止当前播放；2) 清空播放队列；3) 开始新的。这需要在 TTSManger 的 `stop()` 被调用时彻底释放 AudioContext 资源。
+> 🤖 **AI 常见错误**：音频消息还没播完就发下一条。如果 Agent 的回复还没播放完毕，用户就发送了新消息（或 Agent 自己的下一条回复触发了新的 TTS），需要：1) 立即停止当前播放；2) 清空播放队列；3) 开始新的。这需要在 TTSManager 的 `stop()` 被调用时彻底释放 AudioContext 资源。
 
 ---
 
@@ -1378,7 +1386,7 @@ function GeneratedImage({ base64, prompt }: { base64: string; prompt: string }) 
 
 **问题**：前一条消息的 TTS 还在播放，新消息就触发了新的 TTS。两个音频流交织播放，用户体验极差。
 
-**解决**：TTSManger 必须维护一个**播放互斥锁**：
+**解决**：TTSManager 必须维护一个**播放互斥锁**：
 ```typescript
 async speakStream(textStream: AsyncGenerator<string>): Promise<void> {
   if (this.isPlaying) this.stop();  // 立即停止当前播放

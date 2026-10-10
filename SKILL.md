@@ -36,7 +36,7 @@ A router for building a complete AI Agent product. **Do not implement directly f
 
 首次加载任一 reference 前，**先检查上面的清单**：这一层是否已有成熟方案可以接入？如果有，直接接，不要重新发明。
 
-## 🧭 你的路径选择：自建 vs 复用开源项目
+## 🧭 你的路径选择：自建 vs 复用开源项目 / Path Selection: Build vs Reuse
 
 > 你有两条路。不要一上来就默认"从头写"。
 
@@ -114,7 +114,7 @@ A router for building a complete AI Agent product. **Do not implement directly f
 |------|------|
 | **`@modelcontextprotocol/sdk`** | MCP 官方 TypeScript SDK（必须用） |
 | **[Playwright MCP](https://github.com/microsoft/playwright-mcp)** | 浏览器自动化 MCP Server |
-| **[Filesytem MCP](https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem)** | 文件系统操作 |
+| **[Filesystem MCP](https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem)** | 文件系统操作 |
 | **[GitHub MCP](https://github.com/modelcontextprotocol/servers/tree/main/src/github)** | GitHub 操作 |
 | **[Slack MCP](https://github.com/modelcontextprotocol/servers/tree/main/src/slack)** | Slack 集成 |
 | **[Google Drive MCP](https://github.com/modelcontextprotocol/servers/tree/main/src/gdrive)** | Google Drive |
@@ -303,15 +303,15 @@ User wants to build from scratch / create new agent project?
     ├── Webhook not firing / not idempotent → references/24-product-layer.md
 ```
 
-## Progressive Loading Protocol
+## Progressive Loading Protocol / 渐进式加载协议
 
 1. **Assess** — determine which layer(s) the user needs (see tree above)
 2. **Load ONE** — read only the first reference the user needs
 3. **Implement** — deliver code + explanation from that reference
 4. **Chain** — if the user asks for more, load the next reference in sequence
-5. **Never pre-load all references** — each is 500-900 lines; loading all wastes context
+5. **Never pre-load all references** — 每个节点 1,000-3,700 行不等；loading all wastes context
 
-## Execution Order
+## Execution Order / 执行顺序
 
 If building from scratch, follow this strict order (each layer depends on the previous):
 
@@ -342,7 +342,7 @@ If building from scratch, follow this strict order (each layer depends on the pr
 | 23 | `23-artifacts-computer-use.md` | Artifact Registry + Renderer, Computer Tool (screenshot/click/type), CLI/Headless mode, Ask User Question, CLAUDE.md/Auto Memory, Skills & Hooks |
 | 24 | `24-product-layer.md` | Playground UI, Multi-model routing (LiteLLM pattern), rate limiting (token bucket), quota/budget, webhook events, CI/CD integration, Agent-as-a-Service API |
 
-## Cross-Reference Map
+## Cross-Reference Map / 交叉引用映射
 
 When implementing a later layer, you may need to reference concepts from earlier layers:
 
@@ -372,7 +372,7 @@ When implementing a later layer, you may need to reference concepts from earlier
 | 23 Artifacts/ComputerUse | 01's SSE stream, 02's Tool system, 13's Structured Output, 16's Multimodal screen capture |
 | 24 Product Layer | 01's Agent abstraction, 08's Observability, 11's multi-provider, 19's multi-tenancy |
 
-## Notes for the Agent Using This Skill
+## Notes for the Agent Using This Skill / 给使用本 Skill 的 Agent 的说明
 
 - **Every reference contains**: working TypeScript code, engineering rationale (why this approach), AI-pitfall annotations (what LLMs get wrong), and a verification checklist
 - **Never invent APIs** documented in references — use the exact function names and types given
@@ -380,7 +380,7 @@ When implementing a later layer, you may need to reference concepts from earlier
 - **Front-end**: All backend references include a Frontend Integration section showing the corresponding React/UI code
 - **When in doubt about order**, follow the Execution Order table — layers are cumulative
 
-## Domain organization: monorepo layout
+## 领域组织：Monorepo 结构 / Domain Organization: Monorepo Layout
 
 All code in references assumes this workspace:
 
@@ -400,7 +400,7 @@ agent-core/
 
 If the user already has a project, map these paths to their structure and adapt imports.
 
-## 不重复造轮子铁律（所有 references 通用）
+## 不重复造轮子铁律（所有 references 通用） / No Wheel-Reinvention Iron Rule
 
 1. **优先选用以下成熟生态**：
    - LLM SDK：OpenAI SDK (兼容 DeepSeek/Ollama) / Anthropic SDK / Google GenAI SDK
@@ -426,7 +426,7 @@ If the user already has a project, map these paths to their structure and adapt 
    - tool.execute → throw ToolError → Agent.run yield { type: 'tool_error' } → SSE sendEvent('tool_error') → UI 显示
    - 每个环节用自定义 error 类（ToolError, MemoryError, EmbeddingError）而非裸 Error
 
-## Agent 常见 AI 生成错误（Strict Mode）
+## Agent 常见生成错误 / Common AI Pitfalls (Strict Mode)
 
 agent 在完成 Skill 任务时，**默认启用以下自检模式**：
 
@@ -436,7 +436,7 @@ agent 在完成 Skill 任务时，**默认启用以下自检模式**：
 4. **错误码标准**：API 错误需要同时提供 machine-readable code（如 `TOOL_TIMEOUT`）和 human-readable message
 5. **日志规范**：结构化 JSON 日志格式 `{ timestamp, level, trace_id, msg, context }` — 不写 `console.log('got data:', data)`
 
-## 前端约束（Skills-UI Specific）
+## 前端约束 / Frontend Constraints (Skills-UI Specific)
 
 - 所有 state mutation 通过 Zustand action 操作——不直接改 state
 - 所有 async 操作通过 `useChatStream` 类 hook 完成——不在 useEffect 内裸 fetch React state
@@ -444,7 +444,7 @@ agent 在完成 Skill 任务时，**默认启用以下自检模式**：
 - SSE 必须用 callback ref 保存 disconnect 函数——不在 state 内存 function
 - 代码块必须用 Shiki 渲染——不用 dangerouslySetInnerHTML
 
-## 与企业主流方案的对标
+## 与企业主流方案的对标 / Enterprise Benchmark Comparison
 
 本 Skill 的架构决策对标以下企业级实现：
 - **Claude Desktop** → MCP 协议优先，工具调用规范化

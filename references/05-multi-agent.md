@@ -218,7 +218,7 @@ export class Supervisor {
     let decisionText = '';
     for await (const chunk of this.llm.stream(
       [{ role: 'user', content: decisionPrompt }],
-      { maxTokens: 500, state: state.signal ? { signal: state.signal } : undefined } as any
+      { maxTokens: 500, signal: state.signal }
     )) {
       if (chunk.type === 'token') {
         decisionText += (chunk.data as { content: string }).content;
@@ -615,10 +615,24 @@ export function createPipeline(graph: OrchestrationGraph) {
     async *run(orchestrator: MultiAgentOrchestrator, task: string, signal?: AbortSignal) {
       let currentNodeId = graph.entryNodeId;
       const visited = new Set<string>();
+      const maxRounds = graph.nodes.length * 2; // loop detection: 最多跑 2 轮
 
-      while (currentNodeId && !visited.has(currentNodeId)) {
+      let rounds = 0;
+      while (currentNodeId && !visited.has(currentNodeId) && rounds < maxRounds) {
+        rounds++;
         visited.add(currentNodeId);
-        // ... 执行当前节点
+
+        // 执行当前节点
+        const worker = orchestrator['workers'].get(currentNodeId);
+        if (!worker) {
+          throw new Error(`Unknown node in pipeline: ${currentNodeId}`);
+        }
+
+        let output = '';
+        for await (const event of worker.execute(task, {}, signal)) {
+          if (event.type === 'done') output = event.output;
+        }
+
         // 找下一个节点（Pipeline 的 edge 只有一个）
         const nextEdge = graph.edges.find(e => e.from === currentNodeId);
         currentNodeId = nextEdge?.to ?? null;
@@ -631,6 +645,11 @@ export function createPipeline(graph: OrchestrationGraph) {
  * 范式二：Debate（辩论协商）
  * 适用：有多种可能方案，如"选技术方案"、"产品决策"
  * 实现：两个 Agent 对同一问题给出方案 → 第三个 Agent 裁判出胜者
+ *
+ * HINT: 基于 createPipeline 模式扩展，差异仅在于 handoff logic —
+ * 辩论模式下 Supervisor 需要管理轮次（每轮 proponents 互看对方输出再改进），
+ * judge 最终选 winner 而非固定路径流转。
+ * 实现时复用 MultiAgentOrchestrator.run() 主循环，自定义 decide() 逻辑即可。
  */
 
 export function createDebate(propponentIds: string[], judgeId: string) {
@@ -647,6 +666,10 @@ export function createDebate(propponentIds: string[], judgeId: string) {
  * 适用：开放探索，如"创意发头脑风暴"、"开放式调研"
  * 实现：所有 Agent 同时拿到任务，各自并行执行 → 汇总
  * 特点：不确定性最高但创意空间最大
+ *
+ * HINT: 基于 createPipeline 模式扩展，差异仅在于 handoff logic —
+ * Swarm 模式下所有 participant 并行启动（Promise.all），完成后由 aggregator 汇总。
+ * Supervisor 无需 LLM 决策，与 Pipeline 类似，但并行度 = N。
  */
 
 export function createSwarm(participantIds: string[], aggregatorId: string) {
@@ -882,7 +905,8 @@ export const useOrchestratorStore = create<OrchestratorStoreState>((set) => ({
         }
       } catch (error) {
         if ((error as Error).name !== 'AbortError') {
-          console.error('Orchestrator error:', error);
+          // 更新 UI 错误状态而非仅 console.error
+          set((s) => ({ events: [...s.events, { type: 'error', error: (error as Error).message }] }));
         }
       }
     })();
@@ -890,6 +914,12 @@ export const useOrchestratorStore = create<OrchestratorStoreState>((set) => ({
 
   abort: () => {
     abortController?.abort();
+    // 通知后端终止 Agent 执行，避免后端仍继续推理浪费 API 费用
+    fetch('/api/agent/abort', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: 'current-session' }), // 实际从 store 取
+    }).catch(() => {});
     set({ state: { status: 'idle' } });
   },
 }));

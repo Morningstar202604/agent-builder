@@ -113,9 +113,9 @@ pnpm dev
 **覆盖内容**：Monorepo 初始化、LLM 抽象层、Agent ReAct 主循环、SSE API、React 聊天 UI、Electron 桌面壳。
 
 **必读章节**：
-- §1.1 Monorepo 初始化与工具链（L50-100）
-- §1.3 core 包——LLM 抽象层（L100-200）
-- §1.4 Agent 核心——ReAct 主循环（L594-700）
+- §1.1 Monorepo 初始化与工具链（参见 01-foundation.md 的 1.1 Monorepo 初始化与工具链 节）
+- §1.3 core 包——LLM 抽象层
+- §1.4 Agent 核心——ReAct 主循环
 - §1.5 SSE 流式 HTTP API（含 POST /api/chat）
 
 **为什么先读这个**：这是整个产品的骨架，后续所有 reference 都基于此骨架扩展。读完后你会理解"一个 Agent 请求从用户点击发送到收到回复"的完整路径。
@@ -187,7 +187,7 @@ pnpm dev
 
 1. **01-foundation 是地基**——任何场景都先读它的前 300 行
 2. **依赖链不可跳跃**——05-multi-agent 依赖 02-tools + 03-memory，不能直接读 05
-3. **按需加载**——每个 reference 500-900 行，不要预读全部
+3. **按需加载**——每个 reference 1,000-3,700 行，不要预读全部
 
 ---
 
@@ -210,7 +210,6 @@ pnpm dev
 | next | >= 15.0.0 | Web 框架（.standalone 产物） |
 | react / react-dom | >= 18.3.0 | UI 框架 |
 | zod | >= 3.23.0 | 结构化输出校验 |
-| @anthropic-ai/sdk | >= 0.32.0 | Anthropic 原生客户端 |
 | openai | >= 4.56.0 | OpenAI 兼容客户端 |
 | @qdrant/js-client-rest | >= 1.11.0 | Qdrant 向量库 |
 | drizzle-orm | >= 0.36.0 | 数据库 ORM |

@@ -14,6 +14,7 @@
 - [6. 切换成本评估矩阵](#6-切换成本评估矩阵)
 - [7. 前端：Framework 适配器面板](#7-前端framework-适配器面板)
 - [8. 避坑汇总](#8-避坑汇总)
+- [9. AI 避坑追加（AST 可检）](#9-ai-避坑追加ast-可检)
 
 ---
 
@@ -146,15 +147,20 @@ export function createAgentNode(
     });
 
     for await (const event of generator) {
-      if (event.type === 'assistant_message') {
-        assistantContent.push(event.content);
-      } else if (event.type === 'tool_result') {
-        toolResults.push({ tool: event.toolName, result: event.result });
-        callCount++;
-        if (callCount >= maxToolCalls) {
-          assistantContent.push('\n[达到工具调用上限，中断执行]');
-          break;
+      try {
+        if (event.type === 'assistant_message') {
+          assistantContent.push(event.content);
+        } else if (event.type === 'tool_result') {
+          toolResults.push({ tool: event.toolName, result: event.result });
+          callCount++;
+          if (callCount >= maxToolCalls) {
+            assistantContent.push('\n[达到工具调用上限，中断执行]');
+            break;
+          }
         }
+      } catch (error) {
+        assistantContent.push(`\n[Agent execution error: ${(error as Error).message}]`);
+        break;
       }
     }
 
@@ -203,11 +209,18 @@ export async function* streamAgentGraph(
   );
 
   for await (const chunk of stream) {
-    // LangGraph 的 chunk 格式是 { nodeName: state } 的 map
-    for (const [nodeName, nodeState] of Object.entries(chunk)) {
+    try {
+      // LangGraph 的 chunk 格式是 { nodeName: state } 的 map
+      for (const [nodeName, nodeState] of Object.entries(chunk)) {
+        yield {
+          type: 'node_update',
+          data: { node: nodeName, state: nodeState },
+        };
+      }
+    } catch (error) {
       yield {
-        type: 'node_update',
-        data: { node: nodeName, state: nodeState },
+        type: 'error',
+        data: { message: (error as Error).message },
       };
     }
   }
@@ -618,8 +631,8 @@ export function createCodeReviewPair(
       When the code is correct and all tests pass, reply with "TERMINATE".`,
     llm_config: {
       config_list: [{ model: 'agentcore-llm', api_key: 'placeholder' }],
-      ...(llmClient as object),
-    } as any,
+      ...llmClient,
+    },
     is_termination_msg: (msg: { content?: string }) => msg.content?.includes('TERMINATE') ?? false,
     human_input_mode: 'NEVER',
   });
@@ -630,8 +643,8 @@ export function createCodeReviewPair(
       the error with instructions to fix. Never say TERMINATE.`,
     llm_config: {
       config_list: [{ model: 'agentcore-llm', api_key: 'placeholder' }],
-      ...(llmClient as object),
-    } as any,
+      ...llmClient,
+    },
     code_execution_config: { use_docker: false, timeout: 30 },
     human_input_mode: 'NEVER',
   });
@@ -667,9 +680,124 @@ AutoGen 的 `GroupChat` 模式在 4+ 个 Agent 时性能急剧下降：
 
 ---
 
-## 5. 实战混用策略
+## 5. CAMEL 集成指南
 
-### 5.1 架构总览
+### 5.1 核心思路：角色扮演对话桥接
+
+CAMEL 的核心模式是两个 Role（如 AssistantRole + UserRole）对话涌现智能。CAMEL 是 Python 系的，TypeScript 项目通过 HTTP 调用 Python CAMEL 服务。
+
+```typescript
+// packages/core/src/frameworks/camel-bridge.ts
+
+/**
+ * CAMEL ApiClient —— 通过 HTTP 调用 Python CAMEL 服务。
+ * CAMEL 的多角色对话编排由 Python 端实现，TS 侧只负责传角色配置、收流式结果。
+ */
+export class CAMELApiClient {
+  constructor(private baseUrl: string) {}
+
+  async *runRolePlaying(params: {
+    taskPrompt: string;
+    assistantRole: { name: string; roleDescription: string; withTaskSpecsConverted?: boolean };
+    userRole: { name: string; roleDescription: string; withTaskSpecsConverted?: boolean };
+    withTaskSpecifier: boolean;
+    maxWords: number;
+  }): AsyncGenerator<string> {
+    const res = await fetch(`${this.baseUrl}/api/camel/role-play`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+
+    if (!res.ok) throw new Error(`CAMEL service error: ${res.status}`);
+
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error('No response body');
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const parsed = JSON.parse(line);
+        yield `[${parsed.role}] ${parsed.content}`;
+      }
+    }
+  }
+}
+```
+
+---
+
+## 6. MetaGPT 集成指南
+
+### 6.1 核心思路：SOP 多角色流水线桥接
+
+MetaGPT 用 Software Company 模式——多个 Role 按 SOP 串行/协作（需求分析 → 技术方案 → 编码 → 测试）。Python-only，TS 侧通过 HTTP 交互。
+
+```typescript
+// packages/core/src/frameworks/metagpt-bridge.ts
+
+/**
+ * MetaGPTClient —— 通过 HTTP 调用 Python MetaGPT 服务。
+ * MetaGPT 的多角色流水线编排由 Python 端实现，TS 侧传需求文本、收各阶段产物。
+ */
+export class MetaGPTClient {
+  constructor(private baseUrl: string) {}
+
+  async *runSoftwareCompany(
+    requirements: string,
+    opts: {
+      maxStepsPerRole?: number;
+      investingGroupSize?: number;
+      namespace?: string;
+    // eslint-disable-next-line @typescript-eslint/no-inferrable-types
+    } = { maxStepsPerRole: 8, investingGroupSize: 5, namespace: 'default' }
+  ): AsyncGenerator<{ step: string; role: string; content: string }> {
+    const res = await fetch(`${this.baseUrl}/api/metagpt/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requirements, ...opts }),
+    });
+
+    if (!res.ok) throw new Error(`MetaGPT service error: ${res.status}`);
+
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error('No response body');
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        yield JSON.parse(line);
+      }
+    }
+  }
+}
+```
+
+---
+
+## 7. 实战混用策略
+
+### 7.1 架构总览
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -697,7 +825,7 @@ AutoGen 的 `GroupChat` 模式在 4+ 个 Agent 时性能急剧下降：
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### 5.2 具体编排示例
+### 7.2 具体编排示例
 
 ```typescript
 // packages/core/src/frameworks/orchestrator.ts
@@ -826,7 +954,7 @@ export class HybridOrchestrator {
 }
 ```
 
-### 5.3 混用关键约束
+### 7.3 混用关键约束
 
 1. **持久化格式统一**：LangGraph 用了 checkpoint，本项目自己也有状态快照。混用时只选一种——推荐用 LangGraph 的 checkpoint 处理"复杂工作流"，本项目的 auto-save 处理"普通对话"。不要两套同时跑。
 
@@ -836,7 +964,7 @@ export class HybridOrchestrator {
 
 ---
 
-## 6. 切换成本评估矩阵
+## 8. 切换成本评估矩阵
 
 | 从 → 到 | 代码改动量 | 性能影响 | 维护收益 | 风险 |
 |---------|-----------|---------|---------|------|
@@ -856,7 +984,7 @@ export class HybridOrchestrator {
 
 ---
 
-## 7. 前端：Framework 适配器面板
+## 9. 前端：Framework 适配器面板
 
 🔗 **工程逻辑**：让用户看到当前使用的框架有几个价值：（1）设置合理期待——知道是 LangGraph 还是直接回复，回复延迟预期不同；（2）调试时快速定位问题出在哪个框架层级；（3）在"研究模式"和"普通模式"间切换。
 
@@ -984,7 +1112,7 @@ export function FrameworkPanel() {
 
 ---
 
-## 8. 避坑汇总
+## 10. 避坑汇总
 
 | 问题 | 原因 | 解法 |
 |------|------|------|
@@ -999,7 +1127,7 @@ export function FrameworkPanel() {
 
 ---
 
-## 9. AI 避坑追加（AST 可检）
+## 11. AI 避坑追加（AST 可检）
 
 > 🤖 **AI 常见错误**：
 >

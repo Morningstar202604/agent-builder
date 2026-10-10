@@ -618,7 +618,7 @@ export interface AgentTool {
   name: string;
   description: string;
   parameters: Record<string, unknown>;  // JSON Schema
-  execute: (args: any, ctx: ToolContext) => Promise<any>;
+  execute: (args: Record<string, unknown>, ctx: ToolContext) => Promise<unknown>;
 }
 
 export interface ToolContext {
@@ -651,7 +651,9 @@ export type AgentEvent =
   | { type: 'tool_error'; toolName: string; toolCallId: string; error: string }
   | { type: 'done'; finishReason: string }
   | { type: 'error'; error: string }
-  | { type: 'iteration'; count: number };
+  | { type: 'iteration'; count: number }
+  | { type: 'context_status'; totalTokens: number; contextWindow: number; usageRatio: number; messageCount: number; isCompressed: boolean; compressionCount: number; lastCompressionAt?: number; breakdown: { system: number; history: number; reserved: number } }
+  | { type: 'memory_extracted'; count: number };
 ```
 
 ### AbstractAgent 主循环
@@ -920,17 +922,34 @@ class MaxSizeMap<K, V> extends Map<K, V> {
     this.lastAccessed.set(key, Date.now());
     return this;
   }
+
+  /** 暴露给子类/外部用于清理过期 entries，避免 `as any` 强转 */
+  protected getLastAccessed(): Map<K, number> {
+    return this.lastAccessed;
+  }
+
+  /** 清理指定 key 的 lastAccessed 记录，与 delete 配套使用 */
+  protected clearAccessTime(key: K): void {
+    this.lastAccessed.delete(key);
+  }
+
+  /** Symbol.dispose 让 cleanupInterval 逻辑可以通过 using 语法管理 */
+  [Symbol.dispose](): void {
+    this.lastAccessed.clear();
+  }
 }
 
 export const sessions = new MaxSizeMap<string, Conversation>(MAX_SESSIONS);
 
 // 定期清理过期会话
+// 使用 protected getLastAccessed() 替代 (sessions as any) 强转
 const cleanupInterval = setInterval(() => {
   const now = Date.now();
-  for (const [key, time] of (sessions as any).lastAccessed) {
+  const accessMap = (sessions as MaxSizeMap<string, Conversation>).getLastAccessed();
+  for (const [key, time] of accessMap) {
     if (now - time > SESSION_TTL_MS) {
       sessions.delete(key);
-      (sessions as any).lastAccessed.delete(key);
+      (sessions as MaxSizeMap<string, Conversation>).clearAccessTime(key);
     }
   }
 }, 60 * 1000);
@@ -1210,12 +1229,31 @@ export function useAgentStream(sessionId: string) {
             }
             case 'tool_complete':
               // 更新 tool call 状态
+              if (streamingMsgIdRef.current) {
+                useChatStore.getState().updateToolCall(
+                  streamingMsgIdRef.current,
+                  event.data.toolCallId as string,
+                  { status: 'completed', result: event.data.result }
+                );
+              }
+              break;
+            case 'tool_error':
+              if (streamingMsgIdRef.current) {
+                useChatStore.getState().updateToolCall(
+                  streamingMsgIdRef.current,
+                  event.data.toolCallId as string,
+                  { status: 'error', error: event.data.error }
+                );
+              }
               break;
             case 'done':
               finishStreaming();
               break;
             case 'error':
               setError(event.data.error as string);
+              break;
+            case 'context_status':
+              // 更新 ContextUsageBar 状态
               break;
           }
         },

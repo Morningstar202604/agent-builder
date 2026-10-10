@@ -252,6 +252,7 @@ export class RiskClassifier {
 // packages/core/src/hitl/approval-engine.ts
 
 import { nanoid } from 'nanoid';
+import { logger } from '@/lib/logger';
 import { RiskClassifier } from './risk-classifier';
 import {
   RiskLevel, TimeoutStrategy,
@@ -316,7 +317,7 @@ export class ApprovalEngine {
     // 🔑 clearTimeout 防止定时器堆积（服务重启超时由外部调度器补偿）
     if (approval.timeoutId) clearTimeout(approval.timeoutId);
 
-    approval.status = 'status' in decision ? decision.status : (decision as any).status;
+    approval.status = decision.status;
     approval.decision = decision;
     this.pending.set(approvalId, approval);
 
@@ -334,6 +335,9 @@ export class ApprovalEngine {
   /**
    * Agent 主循环调用：等待某个审批请求被人类决定。
    * Promise 在有人类决策时 resolve，超时则按默认策略处理。
+   *
+   * 注意：如果组件在 Promise resolve 前卸载，需注销 resolver 防止内存泄漏。
+   * cleanup 逻辑：在返回的 Promise 上附加 cleanup 方法。
    */
   waitForDecision(approvalId: string): Promise<ApprovalDecision> {
     const existing = this.pending.get(approvalId);
@@ -346,6 +350,15 @@ export class ApprovalEngine {
     return new Promise<ApprovalDecision>((resolve) => {
       // 注册 resolver
       this.resolvers.set(approvalId, resolve);
+
+      //  cleanup: 如果 approval 已 resolved/rejected，注销 resolver
+      //  通过 afterResolve 清理
+      const originalResolve = resolve;
+      const wrappedResolve = (decision: ApprovalDecision) => {
+        this.resolvers.delete(approvalId);
+        originalResolve(decision);
+      };
+      this.resolvers.set(approvalId, wrappedResolve);
     });
   }
 
@@ -367,7 +380,7 @@ export class ApprovalEngine {
 
   private emit(event: HITLEvent): void {
     for (const listener of this.listeners) {
-      try { listener(event); } catch { /* ignore broken listener */ }
+      try { listener(event); } catch (error) { logger.warn('Approval listener failed', { error }); }
     }
   }
 
@@ -691,10 +704,12 @@ function ApprovalDetail({ approval, onApprove, onReject, onModify }: {
 // apps/web/src/components/hitl/hitlStore.ts
 
 import { create } from 'zustand';
+import type { PendingApproval } from '@agentcore/shared';
+import { logger } from '@/lib/logger';
 
 interface HITLStoreState {
-  pending: any[];
-  history: any[];
+  pending: PendingApproval[];
+  history: PendingApproval[];
   loadPending: () => Promise<void>;
   approve: (id: string, comment?: string) => Promise<void>;
   reject: (id: string, reason: string) => Promise<void>;
@@ -1498,6 +1513,8 @@ const prompt = this.buildEvalPrompt(query, sanitizedResponse, context);
 // apps/web/src/components/reflection/ReflectionPanel.tsx
 
 import { useState } from 'react';
+// HINT: 反思事件可能上百条，生产环境需要用 @tanstack/react-virtual 或 react-window
+// 虚拟化长列表，防止大量 DOM 节点拖慢渲染。参考：docs/architecture/reflection.md#virtualization
 
 export function ReflectionPanel({ events }: { events: any[] }) {
   const [expanded, setExpanded] = useState(false);

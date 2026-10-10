@@ -170,14 +170,26 @@ export class QdrantVectorStore implements VectorStore {
    *
    * 推荐最低版本：1.9+（支持 payload_indexing、sparse vectors）
    */
-  async assertVersionCompatible(minVersion: string = '1.9.0'): Promise<void> {
-    const info = this.client.getCollections();  // 会触发 REST 调用
-    // 实际实现：const res = await fetch(`${this.client.apiUrl}/health`);
-    //          const serverVersion = res.headers.get('x-qdrant-version') ?? '';
-    // 版本号对比逻辑（semver-major.minor.patch）
-    // if (!satisfiesMin(serverVersion, minVersion)) {
-    //   throw new Error(`Qdrant server v${serverVersion} incompatible — requires >= v${minVersion}`);
-    // }
+  async assertVersionCompatible(minVersion: string = '1.12.0'): Promise<void> {
+    // 从 REST API /health 获取 server version
+    // Qdrant 在 health response 中返回 version 字段
+    const res = await fetch(`${this.client.apiUrl}/health`);
+    if (!res.ok) throw new Error(`Qdrant health check failed: ${res.status}`);
+    const health = await res.json();
+    const serverVersion: string = health.version ?? '';
+
+    // 简单 semver 比较（生产可用 semver 库）
+    const parse = (v: string) => v.split('.').map(Number).map(n => isNaN(n) ? 0 : n);
+    const [sMajor, sMinor] = parse(serverVersion);
+    const [mMajor, mMinor] = parse(minVersion);
+
+    const compatible = (sMajor > mMajor) || (sMajor === mMajor && sMinor >= mMinor);
+    if (!compatible) {
+      throw new Error(
+        `Qdrant server v${serverVersion} incompatible — requires >= v${minVersion}. ` +
+        `Please upgrade Qdrant.`
+      );
+    }
   }
 
   /**
@@ -239,14 +251,14 @@ async upsert(
       } catch (e: any) {
         lastError = e;
         const delay = Math.pow(2, retry) * 100;
-        console.warn(`Qdrant upsert batch ${i / BATCH_SIZE} retry ${retry + 1}/${MAX_RETRIES}: ${e.message}`);
+        logger.warn(`Qdrant upsert batch ${i / BATCH_SIZE} retry ${retry + 1}/${MAX_RETRIES}: ${e.message}`);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
 
     if (lastError) {
       // 最终失败了，记录但不让 Agent 对话中断
-      console.error(`Qdrant upsert failed after ${MAX_RETRIES} retries for batch starting at ${i}:`, lastError);
+      logger.error(`Qdrant upsert failed after ${MAX_RETRIES} retries for batch starting at ${i}:`, lastError);
     }
   }
 }
@@ -383,7 +395,13 @@ async searchWithFilter(
   });
 }
 
-/** Qdrant 过滤器的类型定义 */
+/**
+ * Qdrant 过滤器的类型定义
+ *
+ * 生产环境建议从 @qdrant/js-client-rest 导入官方类型：
+ * import type { Filter, Condition, Match } from '@qdrant/js-client-rest';
+ * 以下为简化类型，与 SDK 结构保持一致。
+ */
 interface QdrantFilter {
   must?: QdrantCondition[];
   should?: QdrantCondition[];
@@ -391,12 +409,24 @@ interface QdrantFilter {
 }
 
 type QdrantCondition =
-  | { key: string; match: { value: any } | { any: any[] } | { text: string } }
+  | { key: string; match: { value: string | number | boolean } | { any: (string | number)[] } | { text: string } }
   | { key: string; range: { gte?: number; lte?: number; gt?: number; lt?: number } }
   | { key: string; isEmpty: { is_empty: { key: string } } }
   | { key: string; hasId: (string | number)[] }
   | QdrantFilter;  // 嵌套
 ```
+
+/**
+ * ⚠️ 向量维度不匹配防护
+ *
+ * 如果更换了 embedding 模型导致维度变化（如从 384 维换成 1536 维），
+ * 必须重建 collection（先 deleteCollection 再 createCollection）。
+ * Qdrant 不会自动检测维度不匹配 —— 它会静默地只比较前 N 维，
+ * 导致召回率严重下降且无报错。
+ *
+ * 建议在 createCollection 时记录 dimension 元数据到 payload 中，
+ * 每次 upsert 时校验维度一致性。
+ */
 
 ### 2.4 分页与删除
 
@@ -994,6 +1024,12 @@ export class JinaEmbedding implements EmbeddingService {
  *      缓存命中后延迟从 50-200ms 降到 < 0.1ms
  */
 export class CachedEmbeddingService implements EmbeddingService {
+  private cache = new Map<string, { vector: number[]; expiry: number }>();
+  private readonly maxSize = this.options?.maxSize ?? 10000;
+  private readonly ttlMs = this.options?.ttlMs ?? 3600_000;
+  private cacheHits = 0;
+  private totalLookups = 0;
+
   constructor(
     private inner: EmbeddingService,
     private options?: {
@@ -1005,10 +1041,6 @@ export class CachedEmbeddingService implements EmbeddingService {
   get provider() { return this.inner.provider; }
   get model() { return this.inner.model; }
   get dimension() { return this.inner.dimension; }
-
-  private cache = new Map<string, { vector: number[]; expiry: number }>();
-  private readonly maxSize = this.options?.maxSize ?? 10000;
-  private readonly ttlMs = this.options?.ttlMs ?? 3600_000;
 
   async embed(text: string): Promise<number[]> {
     const cached = this.getFromCache(text);
@@ -1062,6 +1094,13 @@ export class CachedEmbeddingService implements EmbeddingService {
     this.cache.clear();
   }
 
+  /** 释放资源（关闭时调用） */
+  dispose(): void {
+    this.cache.clear();
+    this.cacheHits = 0;
+    this.totalLookups = 0;
+  }
+
   /** 获取缓存统计 */
   getStats(): { size: number; maxSize: number; hitRate: number } {
     return {
@@ -1070,9 +1109,6 @@ export class CachedEmbeddingService implements EmbeddingService {
       hitRate: this.cacheHits / Math.max(this.totalLookups, 1),
     };
   }
-
-  private cacheHits = 0;
-  private totalLookups = 0;
 
   private getFromCache(text: string): number[] | null {
     this.totalLookups++;
@@ -1563,7 +1599,7 @@ export function VectorDBPanel() {
         cacheHit: data.cacheHit ?? false,
       });
     } catch (error) {
-      console.error('Test recall failed:', error);
+      logger.error('Test recall failed:', error);
     } finally {
       setIsTesting(false);
     }

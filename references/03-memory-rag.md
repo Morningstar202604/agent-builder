@@ -599,6 +599,8 @@ ${conversationBlock}
 JSON output:`;
 
     // [阶段 3 实现] 调用 LLM 实际提取
+    // HINT: 使用 this.llm.stream() 发送 extractionPrompt（已在构造函数注入 LLMClient），
+    // 解析返回的 JSON 数组。参考：docs/architecture/memory.md#llm-extraction
     // const response = await this.callLLM(extractionPrompt);
     // const extracted = JSON.parse(response);
     // return Array.isArray(extracted) ? extracted : [];
@@ -812,8 +814,10 @@ export class MemoryManager {
     limit?: number;
     offset?: number;
   }): Promise<{ entries: MemoryEntry[]; total: number }> {
-    // 实际实现应调用 vectorStore 的 list 方法
-    // 此处为接口定义
+    // HINT: 生产环境应接入 vectorStore.list(collection, filter)
+    // InMemoryVectorStore.list 已实现 — QdrantVectorStore 需 scroll + filter by userId
+    // 参考：docs/architecture/memory.md#pagination
+    // 此处为接口占位
     return { entries: [], total: 0 };
   }
 }
@@ -1117,7 +1121,8 @@ export class RAGRetriever {
 
   /**
    * [阶段 2 实现] Rerank 精排
-   * 接入 bge-reranker 或 Cohere Rerank API
+   * HINT: 接入 bge-reranker 或 Cohere Rerank API
+   * 参考：docs/architecture/rag.md#rerank
    */
   private async rerank(query: string, candidates: RAGResult[], topK: number): Promise<RAGResult[]> {
     // 占位：在阶段 2 接入具体 Rerank 模型
@@ -1262,6 +1267,7 @@ export function MemoryPanel() {
   const [memories, setMemories] = useState<MemoryItem[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);  // UI 错误状态
 
   const handleSearch = useCallback(async (query: string) => {
     if (!query.trim()) return;
@@ -1271,8 +1277,10 @@ export function MemoryPanel() {
       const res = await fetch(`/api/memories/search?q=${encodeURIComponent(query)}`);
       const data = await res.json();
       setMemories(data.results);
+      setSearchError(null);
     } catch (error) {
-      console.error('Search failed:', error);
+      // 生产环境建议用 toast/global error state 展示给用户而非 console.error
+      setSearchError((error as Error).message);
     } finally {
       setIsSearching(false);
     }
@@ -1389,6 +1397,7 @@ interface RAGDocument {
 export function RAGPanel() {
   const [documents, setDocuments] = useState<RAGDocument[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);  // UI 错误状态
 
   const handleUpload = useCallback(async (files: FileList | null) => {
     if (!files?.length) return;
@@ -1405,8 +1414,10 @@ export function RAGPanel() {
         });
       }
       // 刷新列表
+      setUploadError(null);
     } catch (error) {
-      console.error('Upload failed:', error);
+      // 生产环境建议用 toast/global error state 展示给用户而非 console.error
+      setUploadError((error as Error).message);
     } finally {
       setUploading(false);
     }
@@ -1668,36 +1679,39 @@ export class QdrantVectorStore implements VectorStore {
   async upsert(collection: string, entries: Array<{
     id: string; vector: number[]; payload: Record<string, unknown>;
   }>): Promise<void> {
-    // await this.client.upsert(collection, {
-    //   wait: true,
-    //   points: entries.map(e => ({
-    //     id: e.id,
-    //     vector: e.vector,
-    //     payload: e.payload,
-    //   })),
-    // });
     // [阶段 3 实现] 接入 Qdrant SDK
+    // HINT: 接入 Qdrant SDK 后需要将 SDK 异常封装为 MemoryError 向上传播
+    // try {
+    //   await this.client.upsert(collection, { wait: true, points: entries.map(...) });
+    // } catch (error) {
+    //   throw new MemoryError('upsert failed', { cause: error, code: 'STORAGE_ERROR' });
+    // }
   }
 
   async search(collection: string, vector: number[], limit: number): Promise<Array<{
     id: string; score: number; payload: Record<string, unknown>;
   }>> {
-    // const result = await this.client.search(collection, {
-    //   vector,
-    //   limit,
-    //   with_payload: true,
-    // });
-    // return result.map((r: any) => ({ id: r.id, score: r.score, payload: r.payload }));
+    // [阶段 3 实现] 接入 Qdrant SDK
+    // HINT: 接入 Qdrant SDK 后需要将 SDK 异常封装为 MemoryError 向上传播
+    // try {
+    //   const result = await this.client.search(collection, { vector, limit, with_payload: true });
+    //   return result.map((r: any) => ({ id: r.id, score: r.score, payload: r.payload }));
+    // } catch (error) {
+    //   throw new MemoryError('search failed', { cause: error, code: 'STORAGE_ERROR' });
+    // }
     return [];
   }
 
   async delete(collection: string, ids: string[]): Promise<void> {
-    // await this.client.delete(collection, { points: ids });
+    // 接入 Qdrant SDK 后需要将 SDK 异常封装为 MemoryError 向上传播
+    // try { await this.client.delete(collection, { points: ids }); }
+    // catch (error) { throw new MemoryError('delete failed', { cause: error, code: 'STORAGE_ERROR' }); }
   }
 
   async list(collection: string, filter?: Record<string, unknown>): Promise<MemoryEntry[]> {
-    // const result = await this.client.scroll(collection, { filter, with_payload: true });
-    // return result.points.map(...);
+    // 接入 Qdrant SDK 后需要将 SDK 异常封装为 MemoryError 向上传播
+    // try { const result = await this.client.scroll(collection, { filter, with_payload: true }); return result.points.map(...); }
+    // catch (error) { throw new MemoryError('list failed', { cause: error, code: 'STORAGE_ERROR' }); }
     return [];
   }
 }

@@ -217,6 +217,7 @@ import { createReadStream } from 'fs';
 import { createGzip } from 'zlib';
 import { pipeline } from 'stream/promises';
 import { spawn } from 'child_process';
+import semver from 'semver';
 
 /**
  * 开发者通过 CLI 发布 Skill：
@@ -298,7 +299,6 @@ async function validateManifest(skillDir: string): Promise<Record<string, unknow
   }
 
   // version 必须是 semver（P0 修复：自定义正则过严，改用标准 semver.valid）
-  import semver from 'semver';
   if (!semver.valid(manifest.version)) {
     throw new Error(`Invalid semver in manifest.json: ${manifest.version}`);
   }
@@ -356,6 +356,8 @@ export async function runSecurityScan(skillDir: string): Promise<{
     // 检测硬编码密钥
     const keyPatterns = [
       /sk-[a-zA-Z0-9]{48}/,           // OpenAI API key pattern
+      /sk-ant-[a-zA-Z0-9_-]{32,}/,    // Anthropic API key pattern
+      /AIza[a-zA-Z0-9_-]{35}/,         // Google (Gemini) API key pattern
       /["'][a-zA-Z0-9_]*api_key["']\s*[:=]\s*["'][a-zA-Z0-9]{20,}/,
       /["']password["']\s*[:=]\s*["'][^"']{8,}["']/,
     ];
@@ -589,10 +591,43 @@ export class DiscoveryEngine {
       .map((s) => s.listing);
   }
 
-  // popular / newest / topRated 简单实现省略...
-  private async popular(opts: DiscoveryOptions) { return db.listings.findPopular(opts); }
-  private async newest(opts: DiscoveryOptions) { return db.listings.findRecent(opts); }
-  private async topRated(opts: DiscoveryOptions) { return db.listings.findTopRated(opts); }
+  // popular / newest / topRated 带有完整查询 + 过滤 + 排序 + 分页的实现
+  private async popular(opts: DiscoveryOptions): Promise<Listing[]> {
+    return db.listings.findApproved({
+      category: opts.category,
+      search: opts.search,
+      excludeIds: opts.excludeInstalled,
+      sortBy: 'installCount',
+      sortOrder: 'desc',
+      offset: opts.page * opts.pageSize,
+      limit: opts.pageSize,
+    });
+  }
+
+  private async newest(opts: DiscoveryOptions): Promise<Listing[]> {
+    return db.listings.findApproved({
+      category: opts.category,
+      search: opts.search,
+      excludeIds: opts.excludeInstalled,
+      sortBy: 'publishedAt',
+      sortOrder: 'desc',
+      offset: opts.page * opts.pageSize,
+      limit: opts.pageSize,
+    });
+  }
+
+  private async topRated(opts: DiscoveryOptions): Promise<Listing[]> {
+    return db.listings.findApproved({
+      category: opts.category,
+      search: opts.search,
+      excludeIds: opts.excludeInstalled,
+      sortBy: 'avgRating',
+      sortOrder: 'desc',
+      minReviews: 3, // 至少 3 条评价才参与排名，防止刷评
+      offset: opts.page * opts.pageSize,
+      limit: opts.pageSize,
+    });
+  }
 }
 ```
 
@@ -608,11 +643,18 @@ import { getCurrentTenantId } from '@agentcore/core/tenant/tenant-context';
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
 
+  const validStrategies = ['popular', 'newest', 'top_rated', 'trending', 'personalized'] as const;
+  type ValidStrategy = (typeof validStrategies)[number];
+  const rawStrategy = searchParams.get('strategy');
+  const strategy: ValidStrategy = (validStrategies as readonly string[]).includes(rawStrategy ?? '')
+    ? rawStrategy as ValidStrategy
+    : 'popular';
+
   const engine = new DiscoveryEngine();
   const tenantId = getCurrentTenantId();
 
   const results = await engine.discover({
-    strategy: (searchParams.get('strategy') as any) ?? 'popular',
+    strategy,
     category: searchParams.get('category') ?? undefined,
     search: searchParams.get('search') ?? undefined,
     page: Number(searchParams.get('page') ?? 0),
@@ -799,7 +841,7 @@ export function calculateRevenue(
 ): RevenueSplit {
   // Stripe 费用（先扣通道费）
   const stripeFee = Math.ceil(grossCents * 0.029) + 30;
-  const netAmount = grossCents - stripeFee;
+  const netAmount = Math.max(0, grossCents - stripeFee); // 防止小额交易出现负值
 
   return {
     developerCents: Math.floor(netAmount * developerShare),

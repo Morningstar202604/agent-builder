@@ -11,6 +11,12 @@
 >
 > 本 reference 的核心价值：标注了每个"自己写"的环节为何不能用现成库（比如 ToolRegistry 需要按业务做权限分层、Token Budget 需要对齐多 Provider 的 tokenizer 差异）。**先看"为什么不能直接用"的标注，再决定要不要自己写。**
 
+```typescript
+// packages/core/src/tool/logger.ts (或复用全局 logger)
+// 确保统一用 logger 替代分散的 console.warn/console.error
+import { logger } from '@/lib/logger';
+```
+
 ---
 
 ## 目录
@@ -548,7 +554,7 @@ export abstract class AbstractAgent {
         messagesToSend = prepared.messages;
         contextStatus = prepared.status;
         // 把状态传给前端
-        yield { type: 'context_status', ...contextStatus } as any;
+        yield { type: 'context_status', ...contextStatus };
       }
 
       let assistantContent = '';
@@ -807,7 +813,7 @@ export class ToolRegistry {
     const q = query.toLowerCase();
     return Array.from(this.tools.values()).filter(t =>
       t.meta.name.toLowerCase().includes(q) ||
-      t.meta.description.toLowerCase().includes(q) ||
+      (t.meta.description?.toLowerCase() ?? '').includes(q) ||
       t.meta.tags?.some(tag => tag.toLowerCase().includes(q))
     );
   }
@@ -1247,9 +1253,15 @@ export class MCPClient {
 
   async disconnect(): Promise<void> {
     this.isConnected = false;
-    // SDK 的 Client 在不同版本中 disconnect 方法名不同，这里做兼容
-    if (this.client && typeof (this.client as any).close === 'function') {
-      await (this.client as any).close();
+    // SDK 的 Client 在不同版本中 disconnect 方法名不同，用类型守卫替代 `as any`
+    if (this.client) {
+      const clientWithClose = this.client as unknown as { close?: () => Promise<void> };
+      const clientWithDisconnect = this.client as unknown as { disconnect?: () => Promise<void> };
+      if (typeof clientWithClose.close === 'function') {
+        await clientWithClose.close!();
+      } else if (typeof clientWithDisconnect.disconnect === 'function') {
+        await clientWithDisconnect.disconnect!();
+      }
     }
     this.client = null;
   }
@@ -1338,7 +1350,7 @@ export class MCPManager {
           const tools = client.toRegisteredTools();
           this.registry.registerMany(tools);
         } catch (error) {
-          console.error(`Failed to reconnect MCP server "${name}":`, error);
+          logger.warn('Failed to reconnect MCP server', { name, error });
         }
       }
     }
@@ -1777,7 +1789,7 @@ export class SkillLoader {
             found.push(skill);
           } catch (e) {
             // SKILL.md 不存在或格式错误，跳过
-            console.warn(`Skipping skill "${entry.name}": ${(e as Error).message}`);
+            logger.warn('Skipping skill during load', { name: entry.name, error: (e as Error).message });
           }
         }
       } catch (e) {

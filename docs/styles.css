@@ -10,7 +10,7 @@
     --surface: #1a1a28;
     --border: #2a2a3d;
     --text: #e8e8f0;
-    --text-dim: #8888a8;
+    --text-dim: #9b9bb8;
     --accent: #00ff88;
     --accent-dim: rgba(0, 255, 136, 0.15);
     --accent2: #6c5ce7;
@@ -35,6 +35,25 @@ body {
     line-height: 1.6;
     overflow-x: hidden;
     position: relative;
+}
+
+/* Skip link */
+.skip-link {
+    position: absolute;
+    top: -100%;
+    left: 16px;
+    background: var(--accent);
+    color: var(--bg);
+    padding: 8px 16px;
+    border-radius: var(--radius-sm);
+    font-weight: 700;
+    font-size: 0.85rem;
+    z-index: 10000;
+    text-decoration: none;
+    transition: top 0.2s;
+}
+.skip-link:focus {
+    top: 16px;
 }
 
 /* Noise overlay */
@@ -174,6 +193,16 @@ body {
     50% { opacity: 0.4; }
 }
 
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        transition-duration: 0.01ms !important;
+    }
+    .badge-dot {
+        animation: none;
+    }
+}
+
 .hero-title {
     font-size: clamp(2.5rem, 5vw, 4rem);
     font-weight: 900;
@@ -184,6 +213,7 @@ body {
 
 .gradient-text {
     background: linear-gradient(135deg, var(--accent) 0%, #00d4ff 50%, var(--accent2) 100%);
+    color: var(--accent);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;

@@ -454,6 +454,7 @@ export function getParserRegistry(): ParserRegistry {
     _registry = new ParserRegistry(new TextFallbackParser());
     // 注册所有内置解析器
     // 注意：实际 import 放在此处，利用 lazy import 机制
+    // HINT: 取消注释启用对应 parser
     // _registry.register(new PDFParser());
     // _registry.register(new DOCXParser());
     // _registry.register(new HTMLParser());
@@ -527,11 +528,14 @@ export function computeSectionDelta(
 
 /**
  * Section 内容 hash —— 用于检测内容是否变化
- * 简单实现用 MD5/LCYCLE hash，生产可用 xxhash 替代
+ *
+ * ⚠️ 当前使用简单 charCode hash，碰撞风险较高。
+ * 生产环境应使用 SHA-256 + salt（如 crypto.createHash('sha256').update(salt + content)）
+ * 以避免不同内容产生相同 hash 导致 delta 检测遗漏。
  */
 function hashSection(section: DocumentSection): string {
   const normalized = section.content.trim().replace(/\s+/g, ' ');
-  // 简单 hash：实际项目用 crypto.createHash 或 fast-hash
+  // 简单 hash：生产环境替换为 SHA-256 + salt
   let hash = 0;
   for (let i = 0; i < normalized.length; i++) {
     hash = ((hash << 5) - hash + normalized.charCodeAt(i)) | 0;
@@ -552,7 +556,11 @@ function hashSection(section: DocumentSection): string {
  */
 export class DeltaIndexer {
   constructor(
-    private retriever: { indexChunks(chunks: any[]): Promise<void>; removeDocument(docId: string): Promise<void>; },
+    private retriever: {
+      indexChunks(chunks: any[]): Promise<void>;
+      removeDocument(docId: string): Promise<void>;
+      removeBySectionId?(docId: string, sectionId: string): Promise<void>;
+    },
     private embedding: { embedBatch(texts: string[]): Promise<number[][]>; },
     private oldDocProvider: (docId: string) => Promise<ParsedDocument | null>,
   ) {}
@@ -575,11 +583,18 @@ export class DeltaIndexer {
     const delta = computeSectionDelta(oldDoc, newDoc);
 
     // 1. 删除已移除的 chunks
+    // 注意：retriever.removeDocument 实际语义是按 docId 删除整个文档的 chunks。
+    // 当前方案将 sectionId 传入是不匹配的——sectionId 不等于 docId。
+    // 正确做法：遍历 sections，通过 sectionId 过滤 vectorStore 逐一删除，
+    // 或使用专用的 removeBySectionId(sectionId) 方法。
+    // 此处保留为按 docId 全量删除后重建的降级方案：
     if (delta.removedSectionIds.length > 0) {
-      // 按 sectionId 对应的 chunk 范围批量删除
-      for (const sectionId of delta.removedSectionIds) {
-        await this.retriever.removeDocument(sectionId);
-      }
+      // 方案 A（推荐）：遍历 sections 通过 sectionId 逐一删除
+      // for (const sectionId of delta.removedSectionIds) {
+      //   await this.retriever.removeBySectionId?.(docId, sectionId);
+      // }
+      // 方案 B（降级）：删除整个文档所有 chunks 后由下方重新索引补齐
+      await this.retriever.removeDocument(docId);
     }
 
     // 2. 对新增和修改的 sections 重新 embedding
@@ -805,8 +820,12 @@ export class DocumentVersionManager {
     };
   }
 
-  /** 回滚到指定版本 */
-  rollback(docId: string, versionId: string): DocumentVersion | null {
+  /**
+   * 回滚到指定版本
+   *
+   * @param operatorId 执行回滚操作的用户 ID（审计用），不再硬编码 'system'
+   */
+  rollback(docId: string, versionId: string, operatorId: string): DocumentVersion | null {
     const version = this.getVersion(docId, versionId);
     if (!version) return null;
 
@@ -818,7 +837,7 @@ export class DocumentVersionManager {
       chunkCount: version.chunkCount,
       sectionsSnapshot: version.sectionsSnapshot,
       changeDescription: `Rollback to version ${version.versionNumber}`,
-      createdBy: 'system',
+      createdBy: operatorId,
     });
   }
 
@@ -1165,6 +1184,7 @@ import { useState, useCallback } from 'react';
 interface RetrievalResult {
   content: string;
   similarity: number;
+  chunkId?: string;              // 用于提交反馈的 chunk 唯一标识
   citation: {
     docTitle: string;
     pageNumber?: number;
@@ -1198,7 +1218,9 @@ export function RetrievalTestPanel({ docId }: { docId: string | null }) {
       const data = await res.json();
       setResults(data.results);
     } catch (error) {
-      console.error('Search failed:', error);
+      logger.error('Search failed:', error);
+      // UI 错误展示：通过 state 传递错误信息
+      setResults([]);
     } finally {
       setIsLoading(false);
     }
@@ -1206,17 +1228,26 @@ export function RetrievalTestPanel({ docId }: { docId: string | null }) {
 
   const handleFeedback = async (idx: number, feedback: 'relevant' | 'irrelevant') => {
     setResults(prev => prev.map((r, i) => i === idx ? { ...r, feedback } : r));
-    // 提交反馈
-    await fetch('/api/knowledge/feedback', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chunkId: results[idx].citation.docTitle, // 简化示例
-        feedback,
-        query,
-        docId,
-      }),
-    });
+    const result = results[idx];
+    if (!result.chunkId) {
+      logger.warn('Cannot submit feedback: missing chunkId', { docTitle: result.citation.docTitle });
+      return;
+    }
+    try {
+      await fetch('/api/knowledge/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chunkId: result.chunkId,
+          feedback,
+          query,
+          docId,
+        }),
+      });
+    } catch (error) {
+      logger.error('Feedback submission failed:', error);
+      // UI 错误展示：可扩展 errorMessage state
+    }
   };
 
   return (
@@ -1338,7 +1369,10 @@ export function VersionPanel({ docId }: { docId: string | null }) {
     await fetch(`/api/knowledge/documents/${docId}/rollback`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ versionId }),
+      body: JSON.stringify({
+        versionId,
+        operatorId: 'current-user', // 从 auth context 获取当前用户 ID
+      }),
     });
     // 刷新版本列表
     const res = await fetch(`/api/knowledge/documents/${docId}/versions`);

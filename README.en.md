@@ -6,7 +6,7 @@
 [![References: 24 Nodes](https://img.shields.io/badge/References-24%20Nodes-green.svg)](references/)
 [![Bilingual](https://img.shields.io/badge/Language-中文%2FEnglish-orange.svg)](README.zh.md)
 
-[中文文档](README.zh.md) · [English Docs](README.en.md)
+[中文文档](README.zh.md)
 
 ---
 

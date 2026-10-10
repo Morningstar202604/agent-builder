@@ -266,20 +266,35 @@ export class DockerSandbox {
     let timedOut = false;
     let killed = false;
 
-    const timeoutTimer = setTimeout(() => {
-      timedOut = true;
-      spawn('docker', ['kill', this.containerName]);
-    }, this.config.timeoutMs);
+    // 用队列解决 EventEmitter 回调无法直接 yield 的问题
+    const outputQueue: string[] = [];
+    let resolveOutput: (() => void) | null = null;
+    const outputWaiters: Array<() => void> = [];
+
+    const waitForOutput = (): Promise<void> => {
+      if (outputQueue.length > 0) return Promise.resolve();
+      return new Promise<void>((resolve) => { outputWaiters.push(resolve); });
+    };
 
     dockerProcess.stdout.on('data', (data) => {
       const text = data.toString();
       stdout += text;
-      // 注意：流式输出到前端需要通过事件系统传递
+      outputQueue.push(text);
+      // 唤醒等待中的消费循环
+      while (outputWaiters.length > 0) {
+        const w = outputWaiters.shift()!;
+        w();
+      }
     });
 
     dockerProcess.stderr.on('data', (data) => {
       stderr += data.toString();
     });
+
+    const timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      spawn('docker', ['kill', this.containerName]);
+    }, this.config.timeoutMs);
 
     const securityCheck = setInterval(() => {
       if (this.detectSecurityViolation(stderr)) {
@@ -288,6 +303,15 @@ export class DockerSandbox {
       }
     }, 1000);
 
+    // 消费输出队列 —— yield output 事件让前端实时展示
+    const drainOutputQueue = async function* (): AsyncGenerator<SandboxEvent> {
+      while (outputQueue.length > 0) {
+        const chunk = outputQueue.shift()!;
+        yield { type: 'output', data: { chunk }, timestamp: Date.now() };
+      }
+    };
+
+    // 在等待 exitCode 过程中持续消费 outputQueue
     const exitCode = await new Promise<number>((resolve) => {
       dockerProcess.on('close', (code) => {
         clearTimeout(timeoutTimer);
@@ -296,8 +320,16 @@ export class DockerSandbox {
       });
     });
 
+    // 一次性消费所有剩余 output
+    for await (const event of drainOutputQueue()) {
+      yield event;
+    }
+
     const duration = Date.now() - this.startTime;
     this.isRunning = false;
+
+    // OOM 检测：exitCode 137 = SIGKILL（被 OOM Killer 杀掉）
+    const isOom = !timedOut && !killed && exitCode === 137;
 
     if (killed) {
       yield {
@@ -314,7 +346,7 @@ export class DockerSandbox {
     } else {
       yield {
         type: 'stopped',
-        data: { exitCode, durationMs: duration, stdout, stderr },
+        data: { exitCode, durationMs: duration, stdout, stderr, oom: isOom },
         timestamp: Date.now(),
       };
     }
@@ -327,14 +359,15 @@ export class DockerSandbox {
 
     try {
       await execAsync(`docker rm -f ${this.containerName}`);
-    } catch {
-      // 容器可能已经被清理了
+    } catch (error) {
+      // 容器可能已经被清理了，但不代表可以完全忽略——至少 log 一下
+      logger.warn('Sandbox destroy: docker rm failed', { containerName: this.containerName, error });
     }
 
     try {
       await fs.rm(this.tmpDir, { recursive: true, force: true });
-    } catch {
-      // ignore
+    } catch (error) {
+      logger.warn('Sandbox destroy: tmpDir cleanup failed', { tmpDir: this.tmpDir, error });
     }
   }
 
@@ -413,6 +446,14 @@ export class DockerSandbox {
     return ['--env', `WHITELIST_HOSTS=${this.config.networkWhitelist.join(',')}`];
   }
 
+  /**
+   * 检测沙箱安全违规
+   *
+   * 🔗 注意：仅靠 stderr 正则匹配可能产生误报。比如合法代码在只读环境中运行
+   * 因权限问题输出 "Operation not permitted" 或直接 pip install 失败（只读 FS）。
+   * 建议结合 exitCode + mount 限制（可写目录白名单）综合判定，而非仅看 stderr。
+   * 生产环境应加入行为基线：统计 syscall 频率（open/connect/sendto），阈值触发。
+   */
   private detectSecurityViolation(stderr: string): boolean {
     const dangerousSignals = [
       'Operation not permitted',  // 尝试越权操作
@@ -432,7 +473,7 @@ export class DockerSandbox {
     try {
       await execAsync(`docker image inspect ${DOCKER_IMAGE}`);
     } catch {
-      console.warn(`Sandbox image ${DOCKER_IMAGE} not found. Building...`);
+      logger.warn('Sandbox image not found, building', { image: DOCKER_IMAGE });
       await this.buildImage();
     }
   }
@@ -607,6 +648,8 @@ export class SandboxManager {
             } else {
               stdout = event.data.stdout ?? stdout;
             }
+            // OOM 检测：exitCode 137 被标记为 oom
+            if (event.data.oom) status = 'oom';
             break;
           case 'security_violation':
             status = 'security_violation';

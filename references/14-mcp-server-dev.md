@@ -209,11 +209,23 @@ export class FileSystemMCPServer {
     });
   }
 
-  // 具体工具实现（见下方）
-  private async handleReadFile(args: any) { /* ... */ }
-  private async handleWriteFile(args: any) { /* ... */ }
-  private async handleListDirectory(args: any) { /* ... */ }
-  private async handleSearchFiles(args: any) { /* ... */ }
+  // 具体工具实现（见下方 handlers.ts，以下为接口存根）
+  private async handleReadFile(args: { path: string; offset?: number; limit?: number }) {
+    // HINT: 调用 this.handlers.handleReadFile(args)，路径安全检查已在 handlers 内实现
+    throw new Error('Delegate to FileSystemHandlers');
+  }
+  private async handleWriteFile(args: { path: string; content: string }) {
+    // HINT: 调用 this.handlers.handleWriteFile(args)
+    throw new Error('Delegate to FileSystemHandlers');
+  }
+  private async handleListDirectory(args: { path: string; recursive?: boolean }) {
+    // HINT: 调用 this.handlers.handleListDirectory(args)
+    throw new Error('Delegate to FileSystemHandlers');
+  }
+  private async handleSearchFiles(args: { pattern: string; path?: string; file_pattern?: string }) {
+    // HINT: 调用 this.handlers.handleSearchFiles(args)
+    throw new Error('Delegate to FileSystemHandlers');
+  }
 
   async start(): Promise<void> {
     const transport = new StdioServerTransport();
@@ -481,9 +493,16 @@ async def list_resources() -> list[Resource]:
 @server.read_resource()
 async def read_resource(uri: str) -> str:
     """读取 Resource 内容"""
-    # uri 格式: file:///path/to/file
-    file_path = Path(uri.replace("file://", "", 1))
-    full_path = resolve_path(str(file_path))
+    # uri 格式: file:///path/to/file (Unix) 或 file:///C:/path/to/file (Windows)
+    # 注意：uri.replace("file://", "", 1) 在 Windows 上会得到 /C:/path（错误）
+    import sys
+    if sys.platform == 'win32':
+        # Windows: file:///C:/path → C:/path
+        file_path = uri.replace(/^file:\/\/\//, '', 1)
+    else:
+        # Unix: file:///path → /path
+        file_path = uri.replace(/^file:\/\//, '', 1)
+    full_path = resolve_path(file_path)
     return full_path.read_text(encoding="utf-8")
 
 
@@ -674,13 +693,27 @@ export class FileSystemSSEServer {
     // Prompt 实现（见下方独立章节）
   }
 
+  private httpServer: ReturnType<typeof this.app.listen> | null = null;
+
   start(): void {
-    this.app.listen(this.port, () => {
+    this.httpServer = this.app.listen(this.port, () => {
       console.error(`SSE MCP Server running on port ${this.port}`);
       console.error(`  SSE endpoint:  http://localhost:${this.port}/sse`);
       console.error(`  Msg endpoint:  http://localhost:${this.port}/messages`);
       console.error(`  Health check:  http://localhost:${this.port}/health`);
     });
+  }
+
+  /** 关闭 HTTP server 和所有 SSE session */
+  async stop(): Promise<void> {
+    for (const [, session] of this.sessions) {
+      await session.server.close();
+    }
+    this.sessions.clear();
+    if (this.httpServer) {
+      await new Promise<void>((resolve) => this.httpServer!.close(() => resolve()));
+      this.httpServer = null;
+    }
   }
 }
 
@@ -747,7 +780,7 @@ export function setupStreamingTool(server: Server, fsRoot: string): void {
 }
 
 async function handleStreamingAnalysis(
-  args: any,
+  args: { path?: string; scan_type?: 'full' | 'lint' | 'security' },
   server: Server
 ): Promise<any> {
   const targetPath = args.path ?? '.';
@@ -798,12 +831,14 @@ async function handleStreamingAnalysis(
 }
 
 async function getCodeFiles(dir: string): Promise<string[]> {
-  // 实现获取代码文件列表
+  // HINT: 递归遍历目录，返回所有代码文件路径列表
+  // 推荐用 glob pattern: glob.sync('**/*.{ts,js,py}', { cwd: dir })
   return [];
 }
 
 async function analyzeFile(file: string, scanType: string): Promise<any[]> {
-  // 实现分析逻辑
+  // HINT: 读取文件内容，按 scan_type 调用不同分析逻辑
+  // 'full' -> 全量分析；'lint' -> 只做 lint 规则检查；'security' -> 安全漏洞扫描
   return [];
 }
 ```
@@ -1163,6 +1198,15 @@ Output ONLY the test code, no explanation.`,
 
 import express from 'express';
 
+// 扩展 Express Request 类型以支持 user 字段
+declare global {
+  namespace Express {
+    interface Request {
+      user?: { token: string };
+    }
+  }
+}
+
 /**
  * MCP Server 安全层
  *
@@ -1191,8 +1235,8 @@ export function authMiddleware(validTokens: Set<string>) {
       return;
     }
 
-    // 将用户信息附加到 request（可选）
-    (req as any).user = { token };
+    // 将用户信息附加到 request
+    req.user = { token };
 
     next();
   };

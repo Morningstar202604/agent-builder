@@ -1,0 +1,71 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish (leave empty for the latest version tag)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -n "$INPUT_TAG" ]; then
+            ref="$INPUT_TAG"
+          elif [ "$GITHUB_REF_TYPE" = tag ]; then
+            ref="$GITHUB_REF_NAME"
+          else
+            ref="$(git describe --tags --abbrev=0 --match 'v*.*.*')"
+          fi
+          ref="${ref#v}"
+          git rev-parse --verify --quiet "${ref}^{commit}" >/dev/null || {
+            echo "::error::tag '${ref}' does not resolve to a commit"
+            exit 1
+          }
+          echo "resolved=v$ref" >> "$GITHUB_OUTPUT"
+          echo "resolved tag: v$ref"
+
+      - name: Check tag matches VERSION
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          want="v$(tr -d '[:space:]' < VERSION)"
+          [ "$want" = "$GITHUB_REF_NAME" ] || {
+            echo "::error::tag '${GITHUB_REF_NAME}' does not match VERSION file '${want}'"
+            exit 1
+          }
+          echo "tag matches VERSION: $want"
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.resolved }}
+          name: ${{ steps.tag.outputs.resolved }}
+          generate_release_notes: true
+          fail_on_unmatched_files: false

@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- 发布流水线 `.github/workflows/release.yml`：`v*.*.*` tag 推送或 `workflow_dispatch` 手动触发即自动生成 GitHub Release；内置 tag 与 `VERSION` 文件一致性校验，误打标签会直接失败。
+
 ## [1.0.1] - 2026-10-12
 
 ### Added

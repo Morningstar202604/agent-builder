@@ -474,6 +474,144 @@ export function AskUserQuestionCard({ question, onAnswer }: {
 
 ---
 
+
+---
+
+## 1.1 Artifact 渲染组合（react-markdown + Shiki + Sandpack）
+
+Artifact 不再手写渲染器。用成熟组件组合出"代码高亮 + 沙箱预览 + XSS 防护"。
+
+```tsx
+// apps/web/src/components/artifact/CodeArtifact.tsx —— 组合式渲染
+'use client';
+import { memo } from 'react';
+import ReactMarkdown from 'react-markdown';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import DOMPurify from 'dompurify';
+import { SandpackPreview, SandpackProvider } from '@codesandbox/sandpack-react';
+
+export const CodeArtifact = memo(function CodeArtifact({ title, code, lang }: {
+  title: string; code: string; lang: string;
+}) {
+  return (
+    <div className="rounded-lg border shadow-sm">
+      <div className="border-b px-3 py-2 text-sm font-medium">{title}</div>
+      {/* 沙箱预览（可运行） */}
+      <SandpackProvider template="react" files={{ '/App.js': code }} theme="dark">
+        <SandpackPreview style={{ height: 320 }} />
+      </SandpackProvider>
+      {/* 高亮只读代码 */}
+      <SyntaxHighlighter language={lang} style={oneDark} showLineNumbers>
+        {code}
+      </SyntaxHighlighter>
+    </div>
+  );
+});
+```
+
+- **XSS 防线**：所有模型输出的 HTML/Markdown 先过 `DOMPurify.sanitize`，再交给渲染器；绝不 `dangerouslySetInnerHTML` 直插。
+- **为什么不手写语法高亮**：Shiki / react-syntax-highlighter / Prism 已覆盖 200+ 语言、主题、无障碍，自研高亮没有任何收益。
+- **沙箱**：Sandpack 内置 Node 运行环境，天然隔离，比 iframe + 自写 postMessage 安全得多。
+
+🤖 **AI 常见错误**：把模型输出的 HTML 直接 `dangerouslySetInnerHTML` 渲染——Artifact 内容来自 LLM，可能夹带 `<script>`。**必须 DOMPurify 白名单清洗**，且默认禁用 `<script>`/`<iframe>`。
+
+## 1.2 Artifact 决策引擎表 [CUSTOM]
+
+| 输入特征 | 输出方式 | 理由 |
+|---------|---------|------|
+| <15 行代码块 | 对话内 Markdown | 独立窗口割裂体验 |
+| 纯文本解释 | 对话内 Markdown | 无渲染价值 |
+| >15 行代码 / 可运行 demo | **Sandpack Artifact** | 需要高亮+预览 |
+| 报告/长文档 | **Markdown Artifact**（可下载） | 需结构化排版 |
+| 表格/图表数据 | **表格 Artifact**（可导出 CSV） | 便于复用 |
+
+决策函数保留为 `[CUSTOM]`（业务规则），但渲染全部用成熟组件。
+
+## 2.1 Computer Use：Playwright MCP 接入
+
+不要在 `execute` 里手写 `page.goto → screenshot → compare`。直接接 **Playwright MCP**，用 `@playwright/mcp` 服务器暴露 browser 工具。
+
+```bash
+# 启动 Playwright MCP 服务器（可被任意 MCP 客户端/Agent 框架调用）
+npx @playwright/mcp@latest --headless --viewport-size 1280,720
+```
+
+```typescript
+// packages/core/src/tools/browser.ts —— MCP 服务器转 AI SDK tool() 的胶水
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { tool } from 'ai';
+import { z } from 'zod';
+
+const mcpClient = new Client({ name: 'browser-agent', version: '1.0.0' }, { capabilities: {} });
+await mcpClient.connect(new StdioClientTransport({ command: 'npx', args: ['@playwright/mcp@latest'] }));
+
+export const browserTools = {
+  browserNavigate: tool({
+    description: '用 Playwright 打开网页',
+    parameters: z.object({ url: z.string() }),
+    execute: async ({ url }) => {
+      const res = await mcpClient.callTool({ name: 'browser_navigate', arguments: { url } });
+      return res.content;
+    },
+  }),
+};
+```
+
+🤖 **AI 常见错误**：Computer Use 场景无差别用手写"截图→对比"循环。Playwright 对 Web 应用是 0.5s 完成的事，截图循环 5 步 × 2s 延迟纯属浪费。决策树：**Web 应用 → Playwright MCP；桌面应用 → Computer Use（视觉）**。
+
+## 3.1 Headless CLI 深入（Commander）
+
+```typescript
+// apps/cli/src/index.ts —— 用 Commander 构建 CLI，不手写参数解析（CLI 属于 apps/* 应用）
+import { Command } from 'commander';
+
+const program = new Command();
+program
+  .name('agent')
+  .description('Headless Agent CLI')
+  .requiredOption('--prompt <text>', '任务描述')
+  .option('--max-turns <n>', '最大循环数', '10')
+  .option('--timeout <s>', '超时秒数', '300')
+  .action(async (opts) => {
+    if (Number(opts.maxTurns) < 5 || Number(opts.maxTurns) > 100) {
+      console.error('maxTurns 必须在 5-100 之间，防止无限循环烧 token');
+      process.exit(2);
+    }
+    await runHeadless({ prompt: opts.prompt, maxTurns: Number(opts.maxTurns), timeout: Number(opts.timeout) });
+  });
+
+program.parse();
+```
+
+## 4.1 AskUserQuestion 决策表 [CUSTOM]
+
+| 条件 | 行为 |
+|------|------|
+| 有合理默认值 | 用默认值 + 在回答中声明假设，不打断 |
+| severity: minor | 不提问 |
+| severity: critical | 最多 3 次/会话，弹确认框 |
+| 用户已提供足够信息 | 0 提问直接开始 |
+
+## 5.1 Harness：CLAUDE.md 大小校验与 Hooks
+
+```typescript
+// packages/core/src/harness/claude-md.ts —— 防止 CLAUDE.md 变成无限上下文仓库
+const MAX_WARN_KB = 20;
+const MAX_ERROR_KB = 50;
+
+export function validateClaudeMdSize(sizeBytes: number): 'ok' | 'warn' | 'error' {
+  const kb = sizeBytes / 1024;
+  if (kb > MAX_ERROR_KB) return 'error';   // 强制精简
+  if (kb > MAX_WARN_KB) return 'warn';     // 警告
+  return 'ok';
+}
+```
+
+- Hooks 只做基础设施（中间件管道），具体业务 hook（脱敏、错误拦截、工具改写）放在业务代码。
+- SubAgentTask 必须 `contextIsolation: true`，工具白名单，最小权限。
+
 ## 7. 本层验收清单
 
 > 完成本层后，用以下步骤验证：

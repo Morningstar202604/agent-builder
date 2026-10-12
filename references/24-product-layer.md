@@ -422,6 +422,156 @@ export async function POST(req: Request) {
 
 ---
 
+
+---
+
+## 1.1 Playground 组件化：useChat + shadcn/ui
+
+Playground 不是手写聊天逻辑，而是把 `useChat` 与 shadcn/ui 组件拼装成产品 UI。
+
+```tsx
+// apps/web/src/app/playground/page.tsx —— 组件化 Playground
+'use client';
+import { useChat } from 'ai/react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Card, CardContent } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+
+export default function Playground() {
+  const { messages, input, handleInputChange, handleSubmit, isLoading, stop } = useChat({
+    api: '/api/chat',
+    body: { model: 'router:default' }, // 交给 LiteLLM 路由
+  });
+
+  return (
+    <div className="mx-auto max-w-4xl space-y-4 p-6">
+      <div className="flex items-center gap-2">
+        <h1 className="text-xl font-semibold">Playground</h1>
+        <Badge variant="secondary">模型：LiteLLM 路由</Badge>
+      </div>
+      <Card>
+        <CardContent className="h-[60vh] space-y-2 overflow-auto">
+          {messages.map((m) => <MessageBubble key={m.id} message={m} />)}
+        </CardContent>
+      </Card>
+      <form onSubmit={handleSubmit} className="flex gap-2">
+        <Input value={input} onChange={handleInputChange} placeholder="输入消息…" disabled={isLoading} />
+        <Button type="submit" disabled={isLoading}>{isLoading ? '生成中' : '发送'}</Button>
+        {isLoading && <Button type="button" variant="destructive" onClick={stop}>停止</Button>}
+      </form>
+    </div>
+  );
+}
+```
+
+🤖 **AI 常见错误**：前端直连 LLM 并携带 API Key——等于把 Key 公开给所有访问者。**所有 LLM 调用必须走后端代理（`/api/chat`），Key 只存在于服务端环境变量**（LiteLLM 或后端进程）。
+
+## 2.1 LiteLLM Proxy 完整路由配置
+
+```yaml
+# litellm-config.yaml —— 多模型路由 + 成本路由 + fallback
+model_list:
+  - model_name: router:default
+    litellm_params:
+      model: gpt-4o
+      api_key: ${OPENAI_API_KEY}
+  - model_name: router:cheap
+    litellm_params:
+      model: gpt-4o-mini
+      api_key: ${OPENAI_API_KEY}
+  - model_name: router:claude
+    litellm_params:
+      model: claude-sonnet-4-20250514
+      api_key: ${ANTHROPIC_API_KEY}
+
+router_settings:
+  routing_strategy: cost-based-routing   # 优先便宜模型
+  fallbacks:
+    - { model: router:default, fallbacks: [router:claude, router:cheap] }
+  num_retries: 2
+  retry_policy:
+    TimeoutError: true
+    HTTPStatusError: true
+  budget_limit: 1000                     # 月度成本上限（美元）
+```
+
+业务侧所有 `/api/chat` 调用 `baseURL = LITELLM_BASE_URL`，模型名写 `router:default`，具体模型由网关决定。**不要手写模型路由/fallback/成本追踪**——这些是 LiteLLM 的能力。
+
+## 3.1 Upstash Ratelimit 限流集成
+
+```typescript
+// packages/core/src/ratelimit.ts —— 租户/用户级限流
+import { Ratelimit } from '@upstash/ratelimit';
+import { Redis } from '@upstash/redis';
+
+const redis = new Redis({ url: process.env.UPSTASH_REDIS_REST_URL, token: process.env.UPSTASH_REDIS_REST_TOKEN });
+
+export const tenantRatelimit = new Ratelimit({
+  redis,
+  limiter: Ratelimit.slidingWindow(100, '1 h'), // 每租户每小时 100 次
+  analytics: true,
+});
+
+export const userRatelimit = new Ratelimit({
+  redis,
+  limiter: Ratelimit.slidingWindow(20, '1 m'),
+});
+```
+
+- 429 响应体返回 `X-RateLimit-Limit/Remaining/Reset`，前端据此展示配额。
+- **配额预算**：超过预算自动拒绝并写入审计日志；`budget_limit` 在 LiteLLM 侧同步兜底。
+
+## 4.1 Stripe Webhook 幂等与签名
+
+```typescript
+// apps/web/src/app/api/webhooks/stripe/route.ts —— 签名验证 + 幂等
+import Stripe from 'stripe';
+import { NextResponse } from 'next/server';
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET!;
+
+export async function POST(req: Request) {
+  const body = await req.text();
+  const sig = req.headers.get('stripe-signature')!;
+  let event: Stripe.Event;
+  try {
+    event = stripe.webhooks.constructEvent(body, sig, endpointSecret);
+  } catch {
+    return NextResponse.json({ error: 'invalid signature' }, { status: 400 });
+  }
+  // 幂等：以 event.id 去重（Redis SETNX + TTL 7 天）
+  const processed = await redis.setNX(`stripe:${event.id}`, '1', { EX: 604800 });
+  if (!processed) return NextResponse.json({ ok: true, duplicate: true });
+  // 处理 event.type === 'invoice.paid' 等业务逻辑
+  return NextResponse.json({ ok: true });
+}
+```
+
+🤖 **AI 常见错误**：webhook 不验签、不去重——攻击者可伪造事件触发发积分/扣款；网络重试会导致业务动作重复。**签名验证 + eventId 幂等是底线**。
+
+## 5.1 Agent-as-a-Service API：鉴权与租户隔离
+
+```typescript
+// apps/web/src/app/api/agent/route.ts —— 对外 Agent API
+export async function POST(req: Request) {
+  // 1. 验证 API Key（存哈希，不存明文）
+  const apiKey = req.headers.get('x-api-key');
+  const tenant = await authenticateApiKey(apiKey);
+  if (!tenant) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  // 2. 配额检查（Upstash）
+  const { success } = await tenantRatelimit.limit(tenant.id);
+  if (!success) return NextResponse.json({ error: 'quota exceeded' }, { status: 429 });
+  // 3. 交给后端 Agent 循环（streamText + LiteLLM 路由）
+  return runAgentStream(tenant, await req.json());
+}
+```
+
+- API Key 哈希后存储（argon2/bcrypt），泄露可吊销。
+- 所有会话、消息、记忆表都带 `tenant_id` 并启用 RLS（见 19）。
+- 对外暴露 `POST /api/agent`（非流式返回 JSON）与 `POST /api/agent/stream`（SSE）两种形态。
+
 ## 6. 本层验收清单
 
 > 完成本层后，用以下步骤验证产品化能力（限流 / 成本 / Webhook / 路由）符合预期（可在本地或 CI 执行）：

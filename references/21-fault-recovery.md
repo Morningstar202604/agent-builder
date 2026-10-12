@@ -256,6 +256,240 @@ Recovery UI（断线提示条、模型降级通知、进度条）是产品界面
 >
 > 3. **模型降级后 token 预算未重算** — 从大上下文模型降到小上下文模型，ContextManager 仍按旧预算构建 prompt，第一条就报 `context_length_exceeded`。**检查方式**：切换模型必须同步 `resizeBudget(newMaxTokens)`；`buildContext()` 断言 `estimatedTokens <= model.maxContextTokens * 0.9`。
 
+
+---
+
+## 9.1 会话状态快照：Postgres 持久化（生产级）
+
+### checkpointer 选型：Redis vs Postgres
+
+| 场景 | 用哪个 | 理由 |
+|------|--------|------|
+| 短会话、高并发、可容忍丢失 | **Redis checkpointer**（TTL 24h） | 快、热数据在内存 |
+| 长会话、审计要求、跨会话恢复 | **Postgres checkpointer**（LangGraph 官方支持） | 持久、可查询、可审计 |
+| 生产标准做法 | **Postgres 冷归档 + Redis 热快照** 双层 | 兼顾性能与可靠性 |
+
+### LangGraph Postgres checkpointer 完整示例
+
+```typescript
+// packages/core/src/orchestrator/checkpointer.ts —— 生产用 Postgres 持久化会话状态
+import { PostgresCheckpointer } from '@langchain/langgraph-checkpoint-postgres';
+import pg from 'pg';
+
+export async function createPostgresCheckpointer() {
+  const pool = new pg.Pool({
+    connectionString: process.env.DATABASE_URL,
+    max: 10, // 连接池上限，避免打爆数据库
+  });
+  return PostgresCheckpointer.fromPool(pool, { tableName: 'agent_checkpoints' });
+}
+```
+
+- 每轮 `streamText` 结束后写入一个 checkpoint，恢复时从 `thread_id` 取回。
+- `thread_id` 用 `sessionId`：前端 `useChat({ id: sessionId })` 与后端 `thread_id` 对齐。
+- 冷归档表建议加 `created_at` 索引，按租户分区（配合 19 的 RLS）。
+
+### 恢复流程时序（断线重连）
+
+```
+用户断线
+  → 前端收到 SSE 中断（或 30s 无数据）
+  → 指数退避重连（1s→2s→4s→最大30s）
+  → 重连成功，携带 thread_id 恢复会话
+  → 后端从 Postgres 读最新 checkpoint
+  → 重建上下文并继续流式输出（不重复已完成的工具调用）
+```
+
+🤖 **AI 常见错误**：恢复时把"已完成的工具调用"又执行了一遍——工具有副作用（发邮件、扣费）。**checkpoint 里必须记录已完成工具调用的幂等键**，恢复时跳过这些键（见 9.3）。
+
+## 9.2 工具幂等性的完整设计
+
+### 幂等键模式
+
+```typescript
+// packages/core/src/tools/idempotency.ts —— Redis SETNX 实现幂等
+import { createClient } from 'redis';
+
+const redis = createClient({ url: process.env.REDIS_URL });
+await redis.connect();
+
+const TTL_SECONDS = 60 * 60 * 24; // 24h 幂等窗口
+
+export async function tryAcquireIdempotencyKey(toolName: string, args: object): Promise<string | null> {
+  const key = `idem:${toolName}:${hash(JSON.stringify(args))}`;
+  const token = crypto.randomUUID();
+  const ok = await redis.setNX(key, token, { EX: TTL_SECONDS });
+  return ok ? token : null; // null = 重复调用，直接返回上次结果
+}
+
+export async function getCachedResult(key: string): Promise<unknown | null> {
+  const raw = await redis.get(`result:${key}`);
+  return raw ? JSON.parse(raw) : null;
+}
+```
+
+### 三种工具语义
+
+| 工具类型 | 重试语义 | 实现 |
+|---------|---------|------|
+| 只读工具（search、read） | at-least-once，重复无害 | 不设幂等键 |
+| 幂等工具（create with id） | 天然幂等 | 用 client 提供的 id |
+| 副作用工具（send_email、execute_code） | exactly-once | **必须**幂等键 + 缓存结果 |
+
+🤖 **AI 常见错误**：所有工具都加幂等键——只为副作用工具加，否则读操作也走 Redis 写路径，白增延迟。
+
+## 9.3 降级模型链：LiteLLM fallback 配置
+
+不要手写 `try modelA catch modelB`。用 LiteLLM Proxy 的 `fallbacks` 声明式完成。
+
+```yaml
+# litellm-config.yaml（节选）
+model_list:
+  - model_name: primary
+    litellm_params:
+      model: gpt-4o
+      api_key: ${OPENAI_API_KEY}
+  - model_name: fallback
+    litellm_params:
+      model: claude-sonnet-4-20250514
+      api_key: ${ANTHROPIC_API_KEY}
+router_settings:
+  fallbacks:
+    - { model: primary, fallbacks: [fallback] }
+  num_retries: 2
+  retry_policy:
+    HTTPStatusError: true
+    TimeoutError: true
+```
+
+业务代码只调 `baseURL = process.env.LITELLM_BASE_URL` 的 OpenAI 兼容端点，路由与降级全在网关。成本路由：`routing_strategy: "cost-based-routing"` 自动优先便宜模型。
+
+## 9.4 BullMQ 超时与重试的工程细节
+
+```typescript
+// packages/core/src/jobs/agent-job.ts —— 长任务用 BullMQ，不要 setTimeout 硬扛
+import { Queue, Worker } from 'bullmq';
+
+export const agentQueue = new Queue('agent-tasks', {
+  connection: { url: process.env.REDIS_URL },
+  defaultJobOptions: {
+    attempts: 3,               // 重试次数
+    backoff: { type: 'exponential', delay: 2000 },
+    removeOnComplete: { age: 3600, count: 1000 },
+    removeOnFail: { age: 86400 },
+  },
+});
+
+new Worker('agent-tasks', async (job) => {
+  // job.data: { sessionId, message }
+  // 幂等：job.id 作为幂等键
+  const result = await runAgentLoop(job.data);
+  return result;
+}, { concurrency: 5 });
+```
+
+- **重试幂等**：BullMQ 重试会重复执行 job，务必用 `job.id` 做幂等键。
+- **死信队列**：`removeOnFail` 保留失败任务供人工排查；配合 `DLQ` 告警（Langfuse 看板）。
+- **超时**：`job.updateProgress` 心跳 + `Worker` 的 `lockDuration`，避免长任务被误判死锁。
+
+## 9.5 生产故障演练清单
+
+- [ ] 模拟 SSE 中断 30s，验证指数退避重连与 checkpoint 恢复，消息无重复无遗漏
+- [ ] 模拟模型 500/超时，验证 LiteLLM fallback 自动切换且前端不感知
+- [ ] 模拟重复 webhook/工具调用，验证幂等键去重（结果缓存命中）
+- [ ] 模拟 Redis 宕机，验证 Postgres 冷归档仍可恢复会话
+- [ ] 压测：100 并发长任务下 BullMQ 队列积压与 worker 扩展
+
+
+## 9.6 前端 Recovery UI 与用户感知
+
+断线重连不应该让用户看到"报错"。前端要区分三种状态：**重连中**、**已恢复**、**不可恢复（需手动重发）**。
+
+```tsx
+// apps/web/src/hooks/useRecoveryStatus.ts —— 基于 useChat 的断线状态机
+import { useChat } from 'ai/react';
+
+export type RecoveryState = 'streaming' | 'reconnecting' | 'recovered' | 'failed';
+
+export function useRecoveryStatus() {
+  const chat = useChat({ api: '/api/chat', sendExtraMessageFields: true });
+  // 依据 chat.status（'streaming' | 'ready' | 'error'）+ 自研心跳事件推断状态
+  // 通过 AI SDK 的 onError 回调 + 指数退避重试（SDK 内置）驱动状态迁移
+  return { ...chat };
+}
+```
+
+- **重连中**：顶部显示"连接中断，正在重连…"（不阻塞输入框）。
+- **已恢复**：自动补发 `Last-Event-ID` 之后的消息，渲染不重复。
+- **不可恢复**：显示"请重发"按钮，并把未发送消息保留在输入框，不丢用户输入。
+
+🤖 **AI 常见错误**：重连成功后把整段历史重新发送一遍——会触发重复工具调用。正确做法是只补发断点之后的消息，并用幂等键去重。
+
+## 9.7 错误分类策略表 [CUSTOM]
+
+把错误分成可重试/不可重试，避免无脑重试浪费 token。
+
+| 错误类别 | 例子 | 策略 |
+|---------|------|------|
+| 可瞬时重试 | 429、5xx、网络超时 | 指数退避重试（BullMQ/LiteLLM） |
+| 不可重试（输入侧） | 参数校验失败、工具不存在 | 立即返回 tool_error 给 LLM，不重试 |
+| 不可重试（安全） | guardrail 拦截、注入检测触发 | tripwire 终止，不重试，审计 |
+| 降级 | 主模型不可用 | fallback 模型，不重试原模型 |
+
+```typescript
+// packages/core/src/errors/policy.ts
+export function classifyError(error: unknown): 'retryable' | 'fatal' | 'fallback' {
+  if (error instanceof TimeoutError || error instanceof RateLimitError) return 'retryable';
+  if (error instanceof ValidationError || error instanceof ToolNotFoundError) return 'fatal';
+  if (error instanceof ModelUnavailableError) return 'fallback';
+  return 'fatal';
+}
+```
+
+## 9.8 与 LangGraph checkpointer 深度结合
+
+`createReactAgent` 直接支持 checkpointer，恢复会话时从 `thread_id` 续跑，无需自己存消息历史。
+
+```typescript
+// packages/core/src/orchestrator/react-agent.ts —— 用 checkpointer 实现断点续跑
+import { createReactAgent } from '@langchain/langgraph/prebuilt';
+import { ChatOpenAI } from '@langchain/openai';
+import { createPostgresCheckpointer } from './checkpointer';
+
+export async function createResumableAgent() {
+  const checkpointer = await createPostgresCheckpointer();
+  return createReactAgent({
+    llm: new ChatOpenAI({ model: process.env.OPENAI_MODEL ?? 'gpt-4o' }) // 生产：经 LangChain 桥接，或直接喂 AI SDK 模型
+      /* 说明：createReactAgent 需要 LangChain BaseChatModel；AI SDK LanguageModel 可经 @langchain/ai 的包装器转换，见 18 */,
+    tools: [],
+    checkpointer,
+  });
+}
+```
+
+- `thread_id` = `sessionId`；每次工具调用后自动落 checkpoint。
+- 会话中断后，用 `graph.getState({ thread_id })` 查询进度，恢复时从断点继续。
+- 这比手写"消息历史 + 快照"更省事，且状态一致性由框架保证。
+
+## 9.9 超时与取消的优雅处理（深入）
+
+### 三层超时
+
+| 层 | 超时 | 实现 |
+|----|------|------|
+| HTTP 层 | 300s（SSE 长响应） | Nginx `proxy_read_timeout 600s` + `AbortController` |
+| Agent 循环 | `maxSteps` + 全局超时 | `streamText({ maxSteps })` + `Promise.race` |
+| 工具调用 | 30s 每工具 | MCP 客户端 timeout + `AbortSignal.timeout(30000)` |
+
+```typescript
+// 工具级超时示例：AbortSignal.timeout 而非手写 setTimeout 清理
+const result = await tool.execute(args, { signal: AbortSignal.timeout(30_000) });
+```
+
+### 取消语义
+
+用户点"停止" → `useChat` 发送 abort → 后端 `AbortController.abort()` → `streamText` 立即停止 → 已完成的工具调用结果**不落库**（未完成事务），未发送的 token 不消耗。
+
 ## 10. 本层验收清单
 
 - [ ] **类型检查**：仓库根目录运行 `pnpm typecheck`，`packages/core/src/fault/*.ts` 全部通过。

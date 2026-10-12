@@ -668,6 +668,46 @@ export function SkillsPanel() {
 
 ---
 
+
+## 2.2.1 MCP 工具转 AI SDK tool() 的完整胶水
+
+MCP 工具是"远程声明的工具"，AI SDK tool() 是"本地可执行工具"。胶水层只做一件事：把 MCP 的 `inputSchema` 转成 Zod，把 `callTool` 包进 `execute`。
+
+```typescript
+// packages/core/src/mcp/adapters.ts —— MCP → AI SDK tool()
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { tool, type ToolSet } from 'ai';
+import { z } from 'zod';
+import { jsonSchemaToZod } from './json-schema-to-zod'; // [CUSTOM] 极薄转换层
+
+export function mcpToolsToToolSet(client: Client, serverPrefix: string): ToolSet {
+  const tools: ToolSet = {};
+  for (const t of await client.listTools()) {
+    const zodSchema = jsonSchemaToZod(t.inputSchema);
+    tools[`${serverPrefix}.${t.name}`] = tool({
+      description: t.description ?? t.name,
+      parameters: zodSchema as z.ZodObject<any, any>,
+      execute: async (args) => {
+        const res = await client.callTool({ name: t.name, arguments: args });
+        return res.content;
+      },
+    });
+  }
+  return tools;
+}
+```
+
+- **命名空间前缀**（`serverPrefix.toolName`）：给 LLM 上下文锚点，避免 filesystem.readFile 与 github.getFile 混淆。
+- **超时**：`callTool` 传 `{ timeout: 30_000 }`，防 MCP 服务器挂起拖死 Agent。
+- **重连**：`autoReconnect` + 指数退避（见 21）。
+
+## 2.3.1 Skill 系统部署与安全
+
+- **目录规范**：`skills/<name>/SKILL.md` + `frontmatter`（name/description/version），用 `gray-matter` 解析，不要手写 YAML 解析器。
+- **渐进披露**：只把 skill 的 `name` + `description` 给 LLM，内容在工具被选中时才注入——避免上下文爆炸。
+- **冲突检测**：同名工具注册时警告；`load_skill` 激活后工具前缀加 `skill:`，与 MCP 工具区分。
+- **安全**：skill 内容与代码等同对待——来自第三方 skill 的指令可能是注入载荷，加载前过 07 的 PromptSanitizer。
+
 ## 2.4 交叉引用
 
 - [01-foundation.md](01-foundation.md) — 宿主层：`LanguageModel` / `streamText` / `AgentEvent` / `useChat`

@@ -17,6 +17,7 @@ const ALLOWED_PREFIXES = [
   'packages/web',
   'apps/web',
   'apps/electron',
+  'apps/cli',
   'server/src',
 ];
 // Rules the skill states about itself. Numbers here are the current measured baseline;

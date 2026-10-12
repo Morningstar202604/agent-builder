@@ -562,6 +562,39 @@ export async function GET() {
 
 ---
 
+
+## 9.7.1 生产加固：日志、备份、扩缩容、监控
+
+### 日志与可观测性
+
+- 所有服务日志走 **JSON 结构化**（Pino），字段：`{ timestamp, level, trace_id, msg, context }`。
+- 日志轮转：Docker 使用 `json-file` driver 并限制大小：`logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }`。
+- 接入 **Langfuse + OpenTelemetry**（见 08/22）：LLM 调用 span、token 成本、延迟指标全部上平台。
+
+### 数据备份
+
+- Postgres：每日 `pg_dump` 到对象存储（S3/OSS），保留 30 天；启用 WAL 归档（PITR）。
+- Qdrant：快照 API `qdrant snapshot create` 定时快照 + 异地副本。
+- Redis：AOF 持久化开启（`appendonly yes`），避免仅内存。
+
+### 扩缩容
+
+- 无状态层（web）水平扩展：Docker Compose 可用 `docker compose up --scale web=2`；生产建议上 Kubernetes（K8s HPA 按 CPU/内存自动扩缩）。
+- 有状态层（Postgres/Qdrant/Redis）不要盲目 scale；先做连接池上限（pg `max: 10`），再考虑读写分离。
+- Agent 长任务（BullMQ worker）单独扩缩容，与 web 解耦。
+
+### 健康检查与自愈
+
+- `/api/health` 返回 `{ status: 'ok', checks: { db, redis, qdrant, llm } }`。
+- Docker Compose `healthcheck` + `restart: unless-stopped`，容器挂掉自动拉起。
+- 依赖服务不可用时健康检查返回 503，被负载均衡摘除（见 24 的 HA 要求）。
+
+🤖 **AI 常见错误**：
+1. 只部署一个实例且无健康检查——OOM/重启即全站宕机。**至少 2 实例 + 负载均衡健康检查**。
+2. 日志不轮转——磁盘写满后容器崩溃。**必须限制 log 大小与文件数**。
+3. 无备份策略——数据库误删只能手动重放。**每日备份 + WAL 归档是底线**。
+4. 手写部署脚本代替平台——**用标准模板**（GitHub Actions + Docker Compose/K8s），不要自研 pipeline。
+
 ## 9.8 避坑汇总
 
 | 问题 | 原因 | 解法 |

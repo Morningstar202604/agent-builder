@@ -23,6 +23,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 对齐 SKILL.md 声明的 monorepo 布局与 references 实际路径（新增 `server/`、`packages/mcp-servers`、`packages/web`）。
 - `.env.example` 密钥示例改为环境变量注入说明，避免硬编码占位密钥。
 
+## [Unreleased]
+
+### Added（2026-10 扩写与调研）
+- 新增 `docs/TECH_LANDSCAPE.md`：2022-2026 成熟 Agent 技术清单（Agent 编排/集群、MCP 无状态规范、A2A、记忆与 RAG、可观测性/评估/安全、大厂生产实践、淘汰清单）。
+- 新增 `docs/research/`：五份生态调研报告（agent-orchestration / mcp-ecosystem / bigtech-production / memory-rag / observability-eval-security），均附来源。
+- 全部 24 篇 references 展开扩写：融入 2026 成熟技术（LangGraph/OpenAI Agents SDK/Claude Agent SDK/ADK/CrewAI、orchestrator-worker Agent 集群、MCP Streamable HTTP + OAuth 2.1、混合检索+重排+ColBERT、Mem0/Zep/LangMem、promptfoo/LLM-as-judge、Langfuse/OTel GenAI semconv、LiteLLM 网关、Upstash Ratelimit、Stripe 幂等 webhook、BullMQ、OWASP LLM Top 10 等）。
+- `docs/REUSE_MATRIX.md` 更新：补充 Agent 集群、MCP 无状态化、记忆工具、混合检索等映射，并链接 TECH_LANDSCAPE。
+
+### Changed
+- 淘汰过时技术并明确标注：OpenAI Swarm、AutoGen 旧包、Assistants API、NeMo Guardrails、MCP HTTP+SSE 双端点、手写 SSE/JSON-RPC/span/分块器。
+- 验证门禁路径白名单新增 `apps/cli`（Headless CLI 应用）。
+- `references/18-framework-comparison.md` 更新为 2026 框架现状（LangGraph 1.0、MAF 1.0、ADK 2.0、AgentCore GA），并修正验收清单措辞。
+
 ## [1.0.0] - 2026-10-07
 
 ### Added

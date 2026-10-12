@@ -80,6 +80,26 @@ Agent 的安全是"两层夹心"的：
 
 ---
 
+### 1.1 OWASP LLM Top 10（2025）映射到本层
+
+本层（Guardrails + Tracing）不是孤立的"安全工具层"，而是 OWASP LLM Top 10（2025）里多数条目的落地载体。把表钉在本层，防止"安全需求散落在各层、没人对总账"：
+
+| OWASP 编号 | 风险 | 本层的护栏/追踪落点 |
+|-----------|------|-------------------|
+| LLM01 | Prompt Injection | 第 2/3 节 input guardrail + 第 5 节 tool input guardrail |
+| LLM02 | Sensitive Information Disclosure | 第 4 节 output guardrail + 第 9 节泄漏告警 |
+| LLM04 | Data and Model Poisoning | 第 5 节 tool output guardrail（毒化结果拦截） |
+| LLM05 | Improper Output Handling | 第 4 节输出兜底 + Zod 校验 |
+| LLM06 | Excessive Agency | 第 5 节不可逆工具 input guardrail + 06 HITL 审批 |
+| LLM07 | System Prompt Leakage | 第 4 节输出泄漏检测 + 07 的系统提示隔离 |
+| LLM09 | Misinformation | 第 7 节 Langfuse trace 回放 + 06 Reflection 评分 |
+| LLM10 | Unbounded Consumption | 第 9 节 token 告警 + 24 配额限流 |
+
+> **⚠️ NeMo Guardrails 已 EOL（2025-10）**：`nemoguardrails` 已被 NVIDIA 停止维护，本项目**不使用**。所有护栏能力由 OpenAI Agents SDK Guardrails 提供，业务规则表只做配置。检查方式：`grep -rn "nemoguardrails" references/` 不应出现推荐使用表述。
+
+---
+
+
 ## 2. 接入 OpenAI Agents SDK Guardrails
 
 安装依赖：
@@ -518,6 +538,36 @@ export function chatWithTelemetry(messages: UIMessage[], sessionId: string) {
 🤖 **AI 常见错误**：手写 `BatchSpanProcessor`、自定义 `SpanExporter`、自己拼 OTLP JSON——这些官方 SDK 都提供了，手写只会引入协议 bug 和版本漂移。**检查方式**：`grep -rn "class SpanExporter\|class AgentTracer" references/` 应无结果。
 ---
 
+### 8.1 OpenTelemetry GenAI semconv 属性注入
+
+OpenTelemetry GenAI semconv 为 LLM 调用定义了标准 span 属性：`gen_ai.system`、`gen_ai.request.model`、`gen_ai.usage.input_tokens`、`gen_ai.usage.output_tokens`。2026 年 chat/embeddings 属性稳定，agent 属性仍在演进——生产可落地，但需锁定版本并跟随升级。AI SDK 的 `experimental_telemetry` 会自动生成这些属性，本层只补充业务元数据：
+
+```typescript
+// packages/core/src/observability/otel-genai.ts —— 补充 GenAI semconv 业务属性
+export interface GenAiExtraMetadata {
+  sessionId: string;
+  guardrailVerdict?: { blocked: boolean; policyId: string };
+}
+
+export function attachGenAiMetadata(spanAttrs: Record<string, unknown>, meta: GenAiExtraMetadata): Record<string, unknown> {
+  return {
+    ...spanAttrs,
+    'agent.security.session_id': meta.sessionId,
+    ...(meta.guardrailVerdict
+      ? {
+          'agent.security.guardrail_blocked': meta.guardrailVerdict.blocked,
+          'agent.security.guardrail_policy': meta.guardrailVerdict.policyId,
+        }
+      : {}),
+  };
+}
+```
+
+自定义属性统一使用 `agent.security.*` 命名空间，与 `gen_ai.*` 标准属性分离，未来 semconv 升级不会污染标准字段。Langfuse 提供 OTLP 端点（`LANGFUSE_OTLP_ENDPOINT`），span 直接投递即可自动生成 trace 树与 token 统计。
+
+---
+
+
 ## 9. 告警与看板
 
 告警规则和看板是 **Langfuse 平台能力**，不在代码里实现告警引擎。代码侧只需要：① 在 Langfuse 控制台配置规则；② 提供一个接收 webhook 的端点把告警转给 Slack。
@@ -671,6 +721,9 @@ export interface RunStateV2 {
 - [ ] **Langfuse 追踪**：一次对话后，Langfuse 控制台能看到完整 trace 树、token 统计与成本；`onFinish` 中 `flushAsync` 完成无报错。
 - [ ] **OTel**：`initOtel('agent-core')` 启动后，`streamText` 的 `experimental_telemetry` 产生 span，OTLP Collector（或 Langfuse OTLP 端点）能收到数据。
 - [ ] **告警**：Langfuse 控制台配置告警规则后，触发条件时 webhook 收到事件并转发 Slack。
+- [ ] **OWASP 映射**：按 1.1 表逐项核对，每项都有代码归属与测试覆盖；`grep -rn "nemoguardrails" references/` 无推荐使用表述。
+- [ ] **semconv**：`streamText` 的 span 包含 `gen_ai.system` / `gen_ai.request.model` / token 用量，且自定义属性在 `agent.security.*` 命名空间；Langfuse OTLP 端点能收到。
+- [ ] **门禁回归**：运行 `node tools/check-skill.mjs`，本文件所有代码块通过语法解析，且包含 ≥3 条 🤖 避坑标记与本验收清单。
 - [ ] **门禁回归**：运行 `node tools/check-skill.mjs`，本文件所有代码块通过语法解析，且包含 ≥3 条 🤖 避坑标记与本验收清单。
 
 ---

@@ -241,6 +241,135 @@ export function toCitedContext(nodes: BaseNode[], topK = 5): string {
 
 ---
 
+
+---
+
+## 1.3.1 混合检索 + 重排（生产标配）
+
+不要只做纯向量检索。**混合检索（BM25 稀疏 + 稠密向量 + RRF 融合）+ cross-encoder 重排**是 2026 年 RAG 的标配，Qdrant / Weaviate / Pinecone 均原生支持。
+
+```typescript
+// packages/core/src/rag/hybrid-search.ts —— Qdrant 混合检索 + 重排
+import { QdrantClient } from '@qdrant/js-client-rest';
+
+const qdrant = new QdrantClient({ url: process.env.QDRANT_URL, apiKey: process.env.QDRANT_API_KEY });
+
+export async function hybridSearch(collection: string, dense: number[], sparse: Record<string, number>, topK = 10) {
+  // dense + sparse 双路检索，RRF 融合
+  const hits = await qdrant.queryPoints(collection, {
+    prefetch: [
+      { query: dense, using: 'dense', limit: 100 },
+      { query: sparse, using: 'sparse', limit: 100 },
+    ],
+    query: { fusion: 'rrf' }, // 倒数排名融合
+    limit: topK * 3,          // 先多召回，重排后再截断
+    with_payload: true,
+  });
+  return hits.points;
+}
+```
+
+**重排（cross-encoder）**：召回 top-30 后，用 Cohere Rerank 或 bge-reranker 精排取 top-5。
+
+```typescript
+// packages/core/src/rag/rerank.ts
+import { CohereClient } from 'cohere-ai';
+
+const cohere = new CohereClient({ token: process.env.COHERE_API_KEY });
+
+export async function rerank(query: string, docs: Array<{ id: string; text: string }>, topK = 5) {
+  const res = await cohere.rerank({
+    model: 'rerank-v3.5',
+    query,
+    documents: docs.map((d) => d.text),
+    topN: topK,
+  });
+  return res.results.map((r) => docs[r.index!]).map((d, i) => ({ ...d, rank: i }));
+}
+```
+
+🤖 **AI 常见错误**：只做向量检索不重排——BM25 与向量各有盲区，RRF 融合 + cross-encoder 重排能显著提升召回精度；不融合等于放弃工程上已验证的增益。
+
+## 1.4.1 增量索引：LlamaIndex ingestion pipeline
+
+手写增量索引容易漏更新。用 LlamaIndex 的 ingestion pipeline（或 Haystack 的 Pipeline）管理"解析 → 分块 → embedding → 写入"。
+
+```python
+# packages/core/src/rag/ingest.py —— LlamaIndex 增量摄入管线
+from llama_index.core.ingestion import IngestionPipeline
+from llama_index.core.node_parser import SentenceSplitter
+from llama_index.vector_stores.qdrant import QdrantVectorStore
+from llama_index.embeddings.openai import OpenAIEmbedding
+import qdrant_client
+
+client = qdrant_client.QdrantClient(url="http://localhost:6333")
+store = QdrantVectorStore(client=client, collection_name="docs")
+
+pipeline = IngestionPipeline(
+    transformations=[
+        SentenceSplitter(chunk_size=1024, chunk_overlap=64),
+        OpenAIEmbedding(model="text-embedding-3-small"),
+    ],
+    vector_store=store,
+)
+
+def ingest(doc_id: str, documents: list[str]):
+    # upsert 按 doc_id 去重；重跑同一 doc_id 即"增量更新"
+    nodes = [{"text": t, "metadata": {"doc_id": doc_id}} for t in documents]
+    pipeline.run(nodes=nodes)
+```
+
+- **增量更新**：按 `doc_id` 先删除旧分块再写入新分块（或版本号递增）。
+- **失败恢复**：摄入任务入 BullMQ 队列（见 21），失败重试且幂等。
+
+## 1.5.1 版本化 RAG：文档版本与回滚
+
+- 每个文档块带 `version` 字段；检索时默认只查 `is_latest = true`。
+- 升级解析器后重建索引：新版本写入新 collection，验证通过后切别名（Qdrant alias），失败即回滚。
+
+```typescript
+// packages/core/src/rag/versioning.ts —— 用 collection alias 做蓝绿切换
+await qdrant.createCollection('docs_v2', { vectors: { size: 1536, distance: 'Cosine' } });
+// ...写入 v2...
+await qdrant.updateAliases({ actions: [
+  { create_alias: { collection_name: 'docs_v2', alias_name: 'docs' } },
+  { delete_alias: { alias_name: 'docs' } }, // 切别名时先建后删，保证无缝
+]});
+```
+
+## 1.6.1 引用追踪：让答案可溯源
+
+- 检索命中块必须携带 `doc_id` + `chunk_index` + `source_url`。
+- 生成回答时，把命中块注入 tool 结果的 `citations` 数组，前端渲染为可点击引用。
+
+```typescript
+// packages/core/src/rag/citations.ts
+export interface Citation { docId: string; chunkIndex: number; sourceUrl?: string; text: string; score: number }
+```
+
+🤖 **AI 常见错误**：引用与答案分离——模型可能答非所问还挂着引用。正确做法是**基于引用的生成**：只允许模型引用检索到的块，且引用块必须实际参与了生成上下文（否则前端高亮与答案无关，合规场景会出事）。
+
+## 1.7.1 质量闭环：Ragas 评估 RAG
+
+用 **Ragas**（或 DeepEval）评估检索质量：faithfulness（忠实度）、context_relevance（上下文相关性）、answer_relevance。
+
+```bash
+# 离线评估脚本（CI 可跑）
+pip install ragas
+```
+
+```python
+# eval/rag_eval.py（摘要）
+from ragas import evaluate
+from ragas.metrics import faithfulness, context_relevance
+
+result = evaluate(
+    dataset=[{"question": q, "answer": a, "contexts": ctx} for ...],
+    metrics=[faithfulness, context_relevance],
+)
+print(result)  # 分数低于阈值 → CI 失败，阻止知识库变更合入
+```
+
 ## 1.8 本层验收清单
 
 - [ ] **类型检查**：运行 `npx tsc --noEmit -p packages/core`，`knowledge/ingest.ts`、`index.ts`、`delta.ts`、`versioning.ts`、`citation.ts` 全部 0 错误，公共 API 无 `any` 泄漏。

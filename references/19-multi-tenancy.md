@@ -61,6 +61,132 @@ GRANT CONNECT ON DATABASE agentcore TO agentcore_app;
 
 > 🤖 **AI 常见错误**：开启 RLS 后只 `ENABLE ROW LEVEL SECURITY` 却不创建 `POLICY`，默认拒绝策略会让所有查询返回 0 行，表现为"登录正常但所有查询报错"。正确做法：迁移脚本必须为每张业务表创建 `USING (tenant_id = current_setting(...))` 的 POLICY，并在 CI 中断言跨租户查询返回 0 行。
 
+
+### 1.1.1 完整 RLS 迁移（企业级）
+
+只 `ENABLE ROW LEVEL SECURITY` 不写 `POLICY` 是常见翻车点。下面是一份**自洽完整**的迁移：建表、开 RLS、写读写策略、撤销默认权限、建索引，一次到位：
+
+```sql
+-- migrations/004_rls_policies_full.sql（配置：RLS 是数据库策略，不是应用代码）
+CREATE TABLE tenants (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  slug TEXT NOT NULL UNIQUE,
+  tier TEXT NOT NULL DEFAULT 'free',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE conversations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id),
+  title TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE messages (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id),
+  conversation_id UUID NOT NULL REFERENCES conversations(id),
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE tenants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE conversations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
+
+-- 租户只能看到自己的租户行（tenants 表仅对当前租户可见）
+CREATE POLICY tenants_select ON tenants
+  FOR SELECT
+  USING (id = current_setting('app.current_tenant_id', true)::UUID);
+
+-- 读策略：SELECT 只能看到当前租户
+CREATE POLICY conversations_select ON conversations
+  FOR SELECT
+  USING (tenant_id = current_setting('app.current_tenant_id', true)::UUID);
+
+-- 写策略：INSERT 必须属于当前租户（WITH CHECK）
+CREATE POLICY conversations_insert ON conversations
+  FOR INSERT
+  WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::UUID);
+
+-- UPDATE：USING 限制“能改哪些行”，WITH CHECK 防止改完跨租户
+CREATE POLICY conversations_update ON conversations
+  FOR UPDATE
+  USING (tenant_id = current_setting('app.current_tenant_id', true)::UUID)
+  WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::UUID);
+
+-- DELETE：只允许删除当前租户的行
+CREATE POLICY conversations_delete ON conversations
+  FOR DELETE
+  USING (tenant_id = current_setting('app.current_tenant_id', true)::UUID);
+
+-- 防止表 owner 绕过 RLS（超级用户仍然绕过，生产禁止用超级用户跑应用）
+ALTER TABLE tenants FORCE ROW LEVEL SECURITY;
+ALTER TABLE conversations FORCE ROW LEVEL SECURITY;
+ALTER TABLE messages FORCE ROW LEVEL SECURITY;
+
+-- 最小权限：应用角色只拥有业务操作权
+REVOKE ALL ON conversations FROM PUBLIC;
+REVOKE ALL ON messages FROM PUBLIC;
+GRANT SELECT, INSERT, UPDATE, DELETE ON conversations TO agentcore_app;
+GRANT SELECT, INSERT ON messages TO agentcore_app;
+
+-- 索引：租户过滤与列表查询
+CREATE INDEX idx_conversations_tenant_id ON conversations (tenant_id);
+CREATE INDEX idx_messages_tenant_conversation ON messages (tenant_id, conversation_id, created_at DESC);
+```
+
+**关键点**：
+
+- `current_setting('app.current_tenant_id', true)` 的第二参数 `missing_ok := true`：未设置 GUC 时返回 `NULL` 而不是抛错，`tenant_id = NULL` 恒为假 → 未登录请求天然读不到任何行。
+- `FORCE ROW LEVEL SECURITY`：表 owner 也不能绕过 RLS（Postgres 15+ 对 `FORCE` 支持更完整）。应用连接**绝不使用 superuser**。
+- `WITH CHECK`：防止 `UPDATE` 把行改成其他租户，也防止 `INSERT` 直接写入别人的 `tenant_id`。
+
+#### RLS 策略矩阵
+
+| 策略 | 操作 | USING（限制可见/可改的行） | WITH CHECK（限制写入的行） |
+|------|------|---------------------------|---------------------------|
+| `tenants_select` | SELECT | `id = 当前租户` | — |
+| `conversations_select` | SELECT | `tenant_id = 当前租户` | — |
+| `conversations_insert` | INSERT | — | `tenant_id = 当前租户` |
+| `conversations_update` | UPDATE | `tenant_id = 当前租户` | `tenant_id = 当前租户` |
+| `conversations_delete` | DELETE | `tenant_id = 当前租户` | — |
+
+`messages`、`skills`、`audit_logs` 的 RLS 策略与 `conversations` 完全同构，只是表名不同。
+
+#### RLS 自检 SQL（CI 可执行）
+
+```sql
+-- 自检 1：设置当前租户后，能读到自己的行
+BEGIN;
+SET LOCAL app.current_tenant_id = '11111111-1111-1111-1111-111111111111';
+INSERT INTO conversations (id, tenant_id, title)
+VALUES ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '11111111-1111-1111-1111-111111111111', '自己的数据');
+SELECT count(*) FROM conversations;  -- 期望：1
+ROLLBACK;
+```
+
+```sql
+-- 自检 2：跨租户读取返回 0 行
+SET app.current_tenant_id = '11111111-1111-1111-1111-111111111111';
+SELECT count(*) FROM conversations
+WHERE tenant_id = '22222222-2222-2222-2222-222222222222';  -- 期望：0
+```
+
+```sql
+-- 自检 3：跨租户写入必须被 WITH CHECK 拒绝
+BEGIN;
+SET LOCAL app.current_tenant_id = '11111111-1111-1111-1111-111111111111';
+INSERT INTO conversations (id, tenant_id, title)
+VALUES ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', '22222222-2222-2222-2222-222222222222', '越权写入');
+-- 期望：ERROR: new row violates row-level security policy
+ROLLBACK;
+```
+
+这三条自检放进 CI（`pnpm vitest run tenant/isolation` 对应的 SQL 夹具），防止任何人在迁移中删掉策略。
+
+
 ### 1.2 连接层：薄胶水 [CUSTOM]
 
 应用层唯一要做的，是请求进来时把 `tenant_id` 写进会话 GUC。这个"设置上下文"的动作是胶水层，保留 `[CUSTOM]`——但它只做一件事，不做隔离本身。
@@ -200,6 +326,116 @@ export async function guardLLMCall(promptTokenCount: number): Promise<{ ok: bool
 
 > 🤖 **AI 常见错误**：自己实现"滑动窗口"限流（Redis ZSET + Lua）。Upstash Ratelimit 已经处理了原子性、时钟漂移与分布式场景；手写版本在高并发下会出现窗口错位或连接争用。
 
+
+### 3.1 多级限流：租户级 + 用户级同时生效
+
+单一滑动窗口不够：企业平台需要“租户级总配额”和“用户级配额”同时生效。组合两个 `Ratelimit` 实例即可，**不写任何 Lua 脚本**：
+
+```typescript
+// packages/core/src/tenant/rate-limiter-multi.ts —— 多级限流
+import { Ratelimit } from '@upstash/ratelimit';
+import { Redis } from '@upstash/redis';
+
+const redis = Redis.fromEnv();
+
+export function createTenantLimiters(tenantId: string) {
+  const perTenant = new Ratelimit({
+    redis,
+    limiter: Ratelimit.slidingWindow(1000, '1 m'),
+    prefix: `ratelimit:tenant:${tenantId}`,
+  });
+
+  const perUser = new Ratelimit({
+    redis,
+    limiter: Ratelimit.slidingWindow(60, '1 m'),
+    prefix: `ratelimit:user:${tenantId}`,
+  });
+
+  return { perTenant, perUser };
+}
+```
+
+在 `guardLLMCall` 里同时检查两级：
+
+```typescript
+// packages/core/src/tenant/quota-guard-multi.ts —— 两级限流组合
+import { getCurrentTenant } from './tenant-context';
+import { createTenantLimiters } from './rate-limiter-multi';
+
+export async function guardLLMCallMulti(userId: string): Promise<{ ok: boolean; reason?: string }> {
+  const { tenantId } = getCurrentTenant();
+  const { perTenant, perUser } = createTenantLimiters(tenantId);
+
+  const tenantRes = await perTenant.limit('api_calls');
+  if (!tenantRes.success) {
+    return { ok: false, reason: '租户级配额已用完' };
+  }
+
+  const userRes = await perUser.limit(userId);
+  if (!userRes.success) {
+    return { ok: false, reason: '用户级配额已用完' };
+  }
+
+  return { ok: true };
+}
+```
+
+**注意**：`createTenantLimiters` 每次调用都会 new 两个 Ratelimit 实例。与 3 节 `getRatelimiter` 一样，生产环境应把实例缓存在 `Map` 里复用，避免每个请求重复建连。
+
+### 3.2 月度 token 配额：Redis 原子累加 + 月末过期
+
+月度配额是“账单上限”不是“秒级限流”，用 Redis `INCRBY` 原子累加并设置月末过期，不手写计数器：
+
+```typescript
+// packages/core/src/tenant/monthly-quota.ts —— 月度用量累加器
+import { Redis } from '@upstash/redis';
+
+const redis = Redis.fromEnv();
+
+export const MONTHLY_TOKEN_LIMITS = {
+  free: 500_000,
+  pro: 10_000_000,
+  enterprise: 100_000_000,
+} as const;
+
+export async function consumeMonthlyTokens(
+  tenantId: string,
+  tier: keyof typeof MONTHLY_TOKEN_LIMITS,
+  amount: number,
+): Promise<{ ok: boolean; remaining: number }> {
+  const now = new Date();
+  const key = `usage:tokens:${tenantId}:${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+
+  const used = await redis.incrby(key, amount);
+  if (used === amount) {
+    // 首次写入时设置 31 天过期，避免 key 永久残留
+    await redis.expire(key, 31 * 24 * 60 * 60);
+  }
+
+  const limit = MONTHLY_TOKEN_LIMITS[tier];
+  return { ok: used <= limit, remaining: Math.max(0, limit - used) };
+}
+```
+
+与 3 节 `recordTokenUsage` 的差异：`recordTokenUsage` 只记账，`consumeMonthlyTokens` 在记账前先检查配额。调用链建议为：
+
+1. `guardLLMCall`（秒级限流 + 单次 token 上限）
+2. `consumeMonthlyTokens`（月度配额检查并累加）
+3. 通过后才调用模型 API
+4. 模型返回后 `recordTokenUsage` 精确补账（用实际用量覆盖预估值）
+
+### 3.3 配额不足时的降级
+
+配额用尽不应该是 500 错误。成熟的降级策略（按顺序尝试）：
+
+1. **缓存答案**：相同请求（`prompt hash` 一致）直接返回缓存，不消耗配额。
+2. **降级模型**：pro 租户月配额用尽后，提示“已切换基础模型”并走便宜模型，配额按折扣计。
+3. **排队**：企业租户可以进入队列，`BullMQ` 延迟执行（见 [21-fault-recovery](./21-fault-recovery.md)）。
+4. **硬拒绝**：免费租户直接返回 429 + `Retry-After`。
+
+降级策略是**产品决策**，不属于基础设施，保留 `[CUSTOM]`——但执行降级用的缓存、队列、限流全部是成熟组件。
+
+
 ## 4. RBAC：CASL
 
 **权限矩阵是业务定义，校验机制是 CASL**。用 `@casl/ability` 声明能力，不要手写 `ROLE_PERMISSIONS[role].includes(permission)`。
@@ -249,6 +485,107 @@ export async function GET(req: NextRequest) {
 ```
 
 > 🤖 **AI 常见错误**：只在前端隐藏按钮、API 不做能力校验。CASL 的 `can`/`cannot` 必须在每个 route handler 开头执行一次；前端隐藏只是 UX，不是安全控制。
+
+
+### 4.1 权限矩阵（业务配置）
+
+CASL 的 `can`/`cannot` 只负责“判断与执行”，**矩阵本身是业务配置**。把角色权限收敛成一张表，代码与文档共用同一份事实：
+
+| 能力 | owner | admin | editor | viewer |
+|------|:---:|:---:|:---:|:---:|
+| manage Tenant | ✅ | ❌ | ❌ | ❌ |
+| manage Member | ✅ | ✅ | ❌ | ❌ |
+| create / edit / delete Agent | ✅ | ✅ | ❌ | ❌ |
+| invoke Agent | ✅ | ✅ | ✅ | ✅ |
+| manage Skill | ✅ | ✅ | ✅ | ❌ |
+| view AuditLog | ✅ | ✅ | ❌ | ❌ |
+| view Usage | ✅ | ✅ | ✅ | ❌ |
+| manage MCP | ✅ | ✅ | ✅ | ❌ |
+| manage Billing | ✅ | ✅ | ❌ | ❌ |
+
+这张表对应 `rbac.ts` 中的 `ROLE_PERMISSIONS`。**新增角色或能力时，先改表再改代码**，避免“文档说能看审计日志、代码实际拒绝”的漂移。
+
+### 4.2 带条件的 ability：数据属于谁
+
+纯角色表不够表达“行级归属”。例如：`editor` 只能编辑**自己创建**的 Agent，`admin` 可以编辑所有 Agent。CASL 用条件对象表达这种规则，与 RLS 的 `tenant_id` 过滤互补——**RLS 管租户边界，CASL 管租户内部的行归属**：
+
+```typescript
+// packages/core/src/tenant/rbac-conditions.ts —— 条件化 ability
+import { AbilityBuilder, createMongoAbility, type MongoAbility } from '@casl/ability';
+
+type Action = 'create' | 'delete' | 'edit' | 'invoke' | 'manage' | 'view';
+type Subject = 'Agent' | 'Skill' | 'AuditLog' | 'Member' | 'Billing' | 'Usage' | 'MCP' | 'Tenant' | 'all';
+
+export type AppAbility = MongoAbility<[Action, Subject]>;
+
+export function defineAbilityFor(role: string, ownUserId: string): AppAbility {
+  const { can, cannot, build } = new AbilityBuilder<AppAbility>(createMongoAbility);
+
+  if (role === 'owner') {
+    can('manage', 'all');
+  }
+
+  if (role === 'admin') {
+    can('manage', 'Agent');
+    can('manage', 'Skill');
+    can('manage', 'Member');
+    can('manage', 'MCP');
+    can('view', 'AuditLog');
+    can('view', 'Usage');
+    cannot('delete', 'Tenant');
+  }
+
+  if (role === 'editor') {
+    can('create', 'Agent');
+    can('edit', 'Agent', { ownerId: ownUserId });
+    can('delete', 'Agent', { ownerId: ownUserId });
+    can('invoke', 'Agent');
+    can('manage', 'Skill');
+    can('view', 'Usage');
+  }
+
+  if (role === 'viewer') {
+    can('invoke', 'Agent');
+  }
+
+  return build();
+}
+```
+
+`can('edit', 'Agent', { ownerId: ownUserId })` 的含义：只有当 `Agent` 对象的 `ownerId` 等于当前用户时，`edit` 才被允许。校验时传入要操作的资源字段：
+
+```typescript
+// apps/web/src/app/api/agents/[id]/route.ts —— 条件校验示例
+import { NextRequest, NextResponse } from 'next/server';
+import { getCurrentTenant } from '@agentcore/core/tenant/tenant-context';
+import { defineAbilityFor } from '@agentcore/core/tenant/rbac-conditions';
+
+export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
+  const { userRole, userId } = getCurrentTenant();
+  const ability = defineAbilityFor(userRole, userId);
+  const agent = await db.query('SELECT owner_id FROM agents WHERE id = $1', [params.id]);
+
+  if (!agent || ability.cannot('delete', 'Agent', { ownerId: String(agent.owner_id) })) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
+
+  await db.query('DELETE FROM agents WHERE id = $1', [params.id]);
+  return NextResponse.json({ ok: true });
+}
+```
+
+### 4.3 CASL 与 RLS 的分工
+
+| 层 | 回答的问题 | 工具 | 粒度 |
+|----|-----------|------|------|
+| 数据库层 | “这个查询属于哪个租户？” | Postgres RLS | 行级（`tenant_id`） |
+| 应用层 | “这个用户能否对这个资源做这个动作？” | CASL | 资源级（`ownerId`、`role`） |
+| 前端层 | “要不要渲染这个按钮/入口？” | CASL `ability` 序列化 | UX 显示 |
+
+前端隐藏按钮只是 UX——API 层的 CASL 校验与数据库层的 RLS 才是安全控制。**任何 API 都不要只依赖前端**。
+
+🤖 **AI 常见错误**：把条件写进 `ROLE_PERMISSIONS` 数组（如 `['edit', 'Agent', 'ownerId=me']`）然后用 `if (permission.condition === 'owner')` 手写判断——CASL 的条件对象本身就是为这个设计的，直接交给 `can('edit', 'Agent', { ownerId })`，不要另造条件语法。
+
 
 ## 5. 隔离策略
 
@@ -401,6 +738,217 @@ Admin Dashboard（用量图表、配额卡片、审计表格）是产品 UI，�
 - [ ] **限流**：运行 `pnpm vitest run tenant/ratelimit`，断言超过 `TIER_QUOTAS[].requestsPerMinute` 后第 N+1 个请求被拒绝，`remaining` 正确递减。
 - [ ] **审计**：运行 `pnpm vitest run tenant/audit`，断言 `logAudit()` 完成后同租户能查到、跨租户查不到。
 - [ ] **门禁回归**：`node tools/check-skill.mjs` 本文件 0 失败。
+
+---
+
+
+## 12. 审计日志表设计进阶：分区、不可变、保留
+
+### 12.1 按月分区 + 不可变策略
+
+审计日志只增不改，天然适合按时间分区。分区让“删除三个月前的日志”变成 `DROP PARTITION`，而不是海量 `DELETE`：
+
+```sql
+-- migrations/007_audit_logs_partitioned.sql（配置）
+CREATE TABLE audit_logs (
+  id UUID NOT NULL DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL,
+  user_id TEXT NOT NULL,
+  action TEXT NOT NULL,
+  resource TEXT NOT NULL,
+  resource_id TEXT,
+  detail JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ip INET,
+  user_agent TEXT,
+  trace_id TEXT,
+  risk_score INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
+
+CREATE TABLE audit_logs_2026_10 PARTITION OF audit_logs
+  FOR VALUES FROM ('2026-10-01') TO ('2026-11-01');
+CREATE TABLE audit_logs_2026_11 PARTITION OF audit_logs
+  FOR VALUES FROM ('2026-11-01') TO ('2026-12-01');
+
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+
+-- 审计日志只允许 SELECT 当前租户，不允许 UPDATE/DELETE
+CREATE POLICY audit_logs_select ON audit_logs
+  FOR SELECT
+  USING (tenant_id = current_setting('app.current_tenant_id', true)::UUID);
+
+-- 撤销更新/删除权限，应用角色无法篡改审计
+REVOKE UPDATE, DELETE ON audit_logs FROM agentcore_app;
+GRANT SELECT, INSERT ON audit_logs TO agentcore_app;
+
+CREATE INDEX idx_audit_logs_tenant_created ON audit_logs (tenant_id, created_at DESC);
+```
+
+**设计要点**：
+
+- `PRIMARY KEY (id, created_at)`：分区键必须包含在主键/唯一约束中。
+- 不创建 `UPDATE`/`DELETE` 策略：RLS 默认拒绝没有策略的操作，再配合 `REVOKE UPDATE, DELETE` 双保险。
+- `resource_id` 单独成列：审计查询经常按“某个 Agent 的所有变更”过滤，避免每次都解 `detail` JSON。
+- 保留策略：用 `pg_partman` 自动建分区，或定时任务 `DROP TABLE audit_logs_2026_03`，把“删除旧日志”变成“删分区”。
+
+### 12.2 审计事件类型
+
+`action` 字段建议用统一枚举，避免同义不同词（`update` vs `modified`）：
+
+| action | 触发场景 | 风险分 |
+|--------|---------|-------|
+| `tenant.member.invited` | 邀请成员 | 20 |
+| `tenant.member.role_changed` | 角色变更 | 40 |
+| `agent.created` / `agent.deleted` | Agent 生命周期 | 10 |
+| `agent.invoked` | 调用 Agent | 0 |
+| `mcp.server_url_changed` | MCP 配置变更 | 30 |
+| `billing.plan_changed` | 套餐变更 | 50 |
+| `auth.login_failed` | 登录失败（多次触发告警） | 60 |
+
+`risk_score` 用于安全仪表盘排序：累计高风险事件触发 [22-guardrails-tracing](./22-guardrails-tracing.md) 的告警。
+
+## 13. Stripe 计量计费进阶：Billing Meters
+
+### 13.1 `billing.meterEvents` 与 `createUsageRecord` 对比
+
+| 维度 | `subscriptionItems.createUsageRecord`（传统） | `billing.meterEvents.create`（Billing Meters） |
+|------|---------------------------------------------|-----------------------------------------------|
+| 聚合粒度 | 每个订阅条目逐笔上报 | 事件流聚合到 Meter |
+| 出账方式 | 立即写入订阅用量 | 定时聚合后按订阅计费 |
+| 适用场景 | 简单按量（调用次数） | 高吞吐 token 计量、多维度过滤 |
+| 容错 | 需要幂等键 | 事件 ID 天然幂等 |
+
+2026 年的 token 计量推荐 **Billing Meters**：高频、异步、可聚合。
+
+```typescript
+// packages/core/src/tenant/billing-meter.ts —— Billing Meters 上报
+import Stripe from 'stripe';
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+
+export async function reportMeteredUsage(params: {
+  stripeCustomerId: string;
+  tokenCount: number;
+}): Promise<void> {
+  await stripe.billing.meterEvents.create({
+    event_name: 'agent_tokens',
+    payload: {
+      value: String(params.tokenCount), // Meter 事件 value 必须是字符串，且不支持小数
+      stripe_customer_id: params.stripeCustomerId,
+    },
+  });
+}
+```
+
+### 13.2 埋点链路
+
+1. 路由层 `streamText` 结束后读取 `result.usage`（输入 + 输出 token）。
+2. 调用 `reportMeteredUsage({ stripeCustomerId, tokenCount })`。
+3. Stripe 定时把 Meter 聚合到订阅项，生成发票。
+4. 订阅扣费与发票推送走 Webhook，幂等处理见 [24-product-layer](./24-product-layer.md)。
+
+**注意**：Meter 事件是异步聚合，仪表盘上的用量有几分钟延迟——这是 Stripe 的设计，不要为了“实时”改成同步 `createUsageRecord` 双写，否则账单会出现重复计量。
+
+## 14. 多租户测试矩阵
+
+多租户的回归测试必须覆盖“读写两侧”与“绕过路径”。以下测试文件直接可跑：
+
+```typescript
+// packages/core/src/tenant/__tests__/isolation.test.ts
+import { describe, expect, it } from 'vitest';
+
+const TENANT_A = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+const TENANT_B = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+
+// db 来自测试夹具（pg 连接池），set_config 支持参数绑定
+async function queryAsTenant(tenantId: string, sql: string) {
+  await db.query('SELECT set_config(\'app.current_tenant_id\', $1, false)', [tenantId]);
+  return db.query(sql);
+}
+
+describe('tenant isolation', () => {
+  it('tenant A cannot read tenant B rows', async () => {
+    const rows = await queryAsTenant(TENANT_A, 'SELECT * FROM conversations');
+    for (const row of rows) {
+      expect(row.tenant_id).toBe(TENANT_A);
+    }
+  });
+
+  it('cross-tenant insert is rejected by RLS', async () => {
+    await expect(
+      queryAsTenant(
+        TENANT_A,
+        `INSERT INTO conversations (tenant_id, title) VALUES ('${TENANT_B}', 'x')`,
+      ),
+    ).rejects.toThrow();
+  });
+
+  it('unauthenticated session reads zero rows', async () => {
+    await db.query('SELECT set_config(\'app.current_tenant_id\', NULL, false)');
+    const rows = await db.query('SELECT * FROM conversations');
+    expect(rows).toHaveLength(0);
+  });
+});
+```
+
+| 测试场景 | 断言 | 防的漏洞 |
+|---------|------|---------|
+| 跨租户读 | 返回 0 行 | 漏写 `tenant_id` 过滤 |
+| 跨租户写 | `rejects.toThrow()` | 漏写 `WITH CHECK` |
+| 未登录会话 | 0 行 | `current_setting` 单参数抛错 |
+| viewer 调用管理 API | 403 | 前端隐藏但 API 未校验 |
+| 路径穿越 | `resolvePath` 抛错 | 文件系统隔离失效 |
+
+## 15. 企业演进路径：RLS → schema-per-tenant → DB-per-tenant
+
+| 阶段 | 模式 | 租户规模 | 迁移动作 |
+|------|------|---------|---------|
+| 1 | Shared DB + RLS | 10-1000 | 单一 schema，所有表带 `tenant_id` + RLS |
+| 2 | Schema-per-tenant | 1000-10000 | 每个租户一个 schema，`SET search_path` 切换 |
+| 3 | DB-per-tenant | 大客户 | 独立实例/集群，备份与合规独立 |
+
+**何时从 1 升级到 2**：当 RLS 策略数量超过 50 张表、或出现“单租户写入风暴拖垮全局”时。Schema-per-tenant 的切换是配置：
+
+```sql
+-- 连接池为每个租户设置 search_path（胶水层调用）
+ALTER ROLE agentcore_app SET search_path TO tenant_abc, public;
+```
+
+```typescript
+// packages/core/src/tenant/schema-router.ts
+// [CUSTOM] 胶水层：按租户设置 search_path；隔离本身由数据库 schema 保证
+export async function setTenantSchema(conn: { query: (sql: string, params?: unknown[]) => Promise<unknown> }, tenantId: string): Promise<void> {
+  await conn.query('SELECT set_config(\'search_path\', $1, false)', [`tenant_${tenantId.replace(/-/g, '')}, public`]);
+}
+```
+
+**何时升级到 3**：当客户明确要求“数据不与其他客户共享基础设施”（银行/医疗/政府），或合规要求数据驻留在特定区域。升级到 3 不是代码改动，而是部署拓扑变化——应用代码保持 `getCurrentTenant()` 不变。
+
+## 16. AI 避坑追加
+
+> 🤖 **AI 常见错误**：
+
+> 1. **`current_setting` 用单参数** — 租户上下文没设置时直接抛 `ERROR: unrecognized configuration parameter`，表现为“所有查询 500”。**检查方式**：全仓搜索 `current_setting('`，必须是两参形式 `current_setting('...', true)`。
+
+> 2. **忘记 `FORCE ROW LEVEL SECURITY`** — 表 owner（开发常用账号）可以绕过 RLS，导致本地正常、生产异常。**检查方式**：迁移里每张业务表都要有 `ALTER TABLE ... FORCE ROW LEVEL SECURITY`。
+
+> 3. **应用层过滤与 RLS 双写不一致** — 代码里既写 `WHERE tenant_id = $1` 又依赖 RLS，两处逻辑总有一天不一致。**约定**：RLS 是唯一真相，应用层查询**不写** `tenant_id` 过滤（由 GUC 自动生效），只依赖 RLS；需要显式传租户的场景（如后台服务）走 `setTenantContext`。
+
+> 4. **Stripe Meter 事件 value 传数字** — `payload.value` 必须是字符串且不能有小数，token 计量直接 `String(round)`。**检查方式**：`reportMeteredUsage` 前对 `tokenCount` 做 `Math.round` 再 `String`。
+
+> 5. **审计日志没有保留策略** — 日志表无限增长拖垮查询。**检查方式**：审计表必须有分区（按月）与 `DROP PARTITION` 定时任务，且 `created_at` 进入主键。
+
+## 17. 本层验收清单（追加）
+
+- [ ] **RLS 自检**：在 CI 执行 1.1.1 节的三条自检 SQL，确认跨租户读为 0、跨租户写被拒、未登录会话返回 0 行。
+- [ ] **CASL 条件**：运行 `pnpm vitest run tenant/rbac-conditions`，断言 `editor` 能删除自己创建的 Agent、不能删除他人 Agent，`admin` 可删除任何租户内 Agent。
+- [ ] **多级限流**：运行 `pnpm vitest run tenant/ratelimit-multi`，断言租户级 1000 次/分钟与用户级 60 次/分钟分别生效。
+- [ ] **月度配额**：运行 `pnpm vitest run tenant/monthly-quota`，断言超过 `MONTHLY_TOKEN_LIMITS[tier]` 后返回 `ok: false` 且 `remaining` 不为负。
+- [ ] **审计分区**：执行 `migrations/007_audit_logs_partitioned.sql`，确认 `DROP TABLE audit_logs_2026_10` 可独立完成，应用角色无 `UPDATE/DELETE` 权限。
+- [ ] **计费埋点**：mock `stripe.billing.meterEvents.create`，断言 `reportMeteredUsage` 传入的 `value` 是字符串且为四舍五入后的整数。
+- [ ] **门禁回归**：`node tools/check-skill.mjs` 本文件 0 失败。
+
 
 ---
 

@@ -74,6 +74,47 @@ export interface Review {
 }
 ```
 
+
+### 2.1 发布来源：四个渠道
+
+Marketplace 不是只能“直传压缩包”。2026 年 Agent 生态的成熟分发渠道有四种，`Listing` 需要记录来源以走不同的审核与扫描流程：
+
+| source | 含义 | 文件托管 | 安全扫描 |
+|--------|------|---------|---------|
+| `direct-upload` | 直传 tar.gz | GitHub Release Asset | npm/pnpm audit + TruffleHog |
+| `npm` | npm 包 | npm Registry + CDN | npm audit + Sigstore provenance |
+| `mcp-registry` | MCP 官方 Registry | registry.modelcontextprotocol.io | MCP Inspector + audit |
+| `github-marketplace` | GitHub 应用市场 | GitHub Marketplace | 平台审核 + TruffleHog |
+
+```typescript
+// packages/core/src/marketplace/types.ts
+// [CUSTOM] 扩展实体：来源与校验信息随发布渠道增加
+
+export type ListingSource = 'direct-upload' | 'npm' | 'mcp-registry' | 'github-marketplace';
+
+export interface McpServerListing {
+  id: string;
+  listingId: string;               // 关联主 Listing
+  mcpServerUrl?: string;            // 远程 Streamable HTTP 地址（生产）
+  command?: string;                 // stdio 启动命令（本机调试场景）
+  tools: Array<{ name: string; description: string }>;
+  verified: boolean;                // 是否通过官方 Inspector 验证
+}
+
+export interface PackageArtifact {
+  url: string;
+  sha256: string;
+  sizeBytes: number;
+  license: string;
+  signature?: string;                // Sigstore 签名（npm provenance）
+}
+```
+
+### 2.2 版本与许可
+
+`Listing.version` 必须严格遵循 semver，兼容性判断复用 [20 层自身的 `checkCompatibility`](#7-兼容性与安装) 与 `semver` 库。付费 Skill 的许可绑定策略见 7 节与 [19-multi-tenancy](./19-multi-tenancy.md) 的 License 校验。
+
+
 ## 3. Publishing API
 
 ### 3.1 发布流程编排 [CUSTOM]
@@ -155,6 +196,117 @@ export async function auditDependencies(packageDir: string): Promise<{
 ```
 
 > 🤖 **AI 常见错误**：把发布上传直接 POST 到自建存储服务器，既没有版本化也没有 CDN。正确做法：用 GitHub Release Asset，自动获得版本化下载 URL 与流量分发。
+
+
+#### 3.2.1 依赖审计：npm audit 与 pnpm audit
+
+仓库是 pnpm workspace 时用 `pnpm audit`（同样基于 npm 漏洞库，但覆盖全部 workspace 包）；纯 npm 项目继续用 `npm audit`。两者都支持 `--json`，且发现高危漏洞时**以非零码退出但 stdout 仍输出 JSON**——所以要在 catch 里解析 stdout，而不是把非零退出码直接当失败：
+
+```typescript
+// packages/core/src/marketplace/security-scan-v2.ts —— pnpm audit（workspace 全覆盖）
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+
+const execFileAsync = promisify(execFile);
+
+export interface ScanReport {
+  dependencyRisk: 'pass' | 'fail';
+  secretRisk: 'pass' | 'fail';
+  findings: string[];
+}
+
+export async function scanPackage(packageDir: string): Promise<ScanReport> {
+  const [dependency, secrets] = await Promise.all([
+    auditWithPnpm(packageDir),
+    scanSecrets(packageDir),
+  ]);
+
+  return {
+    dependencyRisk: dependency.ok ? 'pass' : 'fail',
+    secretRisk: secrets.ok ? 'pass' : 'fail',
+    findings: [...dependency.findings, ...secrets.findings],
+  };
+}
+
+async function auditWithPnpm(packageDir: string): Promise<{ ok: boolean; findings: string[] }> {
+  try {
+    const { stdout } = await execFileAsync('pnpm', ['audit', '--json', '--audit-level', 'high'], {
+      cwd: packageDir,
+    });
+    return parseAuditJson(stdout);
+  } catch (err) {
+    // pnpm audit 在发现漏洞时非零退出，但 stdout 仍包含 JSON
+    const stdout = (err as { stdout?: string }).stdout;
+    if (stdout) return parseAuditJson(stdout);
+    return { ok: false, findings: [err instanceof Error ? err.message : String(err)] };
+  }
+}
+
+function parseAuditJson(stdout: string): { ok: boolean; findings: string[] } {
+  const report = JSON.parse(stdout) as {
+    metadata: { vulnerabilities: Record<string, number> };
+  };
+  const critical = report.metadata.vulnerabilities.critical ?? 0;
+  const high = report.metadata.vulnerabilities.high ?? 0;
+  return { ok: critical === 0 && high === 0, findings: [`critical=${critical}`, `high=${high}`] };
+}
+```
+
+> 说明：`scanPackage` 返回的 `findings` 是给审核人员看的摘要，完整 JSON 存审计日志（[19-multi-tenancy](./19-multi-tenancy.md) 的审计表）。
+
+#### 3.2.2 密钥扫描：TruffleHog
+
+依赖漏洞只覆盖依赖树，**源码里泄露的密钥要靠 TruffleHog 扫**。发布流水线对解压后的包目录执行 `trufflehog filesystem --json`，任何命中直接拒绝发布：
+
+```typescript
+async function scanSecrets(packageDir: string): Promise<{ ok: boolean; findings: string[] }> {
+  try {
+    const { stdout } = await execFileAsync(
+      'trufflehog',
+      ['filesystem', '--json', '--no-update', packageDir],
+      { timeout: 60_000 },
+    );
+    const lines = stdout.trim().split('\n').filter((line) => line.length > 0);
+    return { ok: lines.length === 0, findings: lines.slice(0, 10) };
+  } catch (err) {
+    return { ok: false, findings: [err instanceof Error ? err.message : String(err)] };
+  }
+}
+```
+
+**为什么 TruffleHog 而不是只靠 git ignore**：开发者可能把 `.env` 误提交、把测试密钥写进 fixture、或把云服务 AK 硬编码在源码里。TruffleHog 对常见密钥格式（AWS、GitHub、Stripe、OpenAI 等）做熵检测与正则匹配，比人工 review 可靠得多。
+
+#### 3.2.3 AST 行为扫描（业务规则）[CUSTOM]
+
+依赖与密钥之外，还需要拦截“Skill 包在安装后执行危险操作”。这是平台安全策略，无成熟开源替代，保留 `[CUSTOM]`——但扫描器本身只做正则/AST 匹配，不实现沙箱（沙箱见 [04-sandbox](./04-sandbox.md)）：
+
+```typescript
+// packages/core/src/marketplace/ast-scan.ts —— [CUSTOM] 业务规则：拒绝危险 API
+import { readFile } from 'fs/promises';
+
+const DANGEROUS_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
+  { pattern: /\beval\s*\(/, reason: 'eval is forbidden' },
+  { pattern: /\bnew\s+Function\s*\(/, reason: 'Function constructor is forbidden' },
+  { pattern: /child_process\s*\.\s*exec\s*\(/, reason: 'child_process.exec is forbidden' },
+  { pattern: /process\s*\.\s*binding\s*\(/, reason: 'native binding is forbidden' },
+];
+
+export async function scanSourceFiles(files: string[]): Promise<string[]> {
+  const findings: string[] = [];
+  for (const file of files) {
+    const content = await readFile(file, 'utf-8');
+    for (const item of DANGEROUS_PATTERNS) {
+      if (item.pattern.test(content)) {
+        findings.push(`${file}: ${item.reason}`);
+      }
+    }
+  }
+  return findings;
+}
+```
+
+发布流水线的完整顺序：**解包 → `pnpm audit` → `trufflehog filesystem` → AST 扫描 → 全部通过才登记 Listing**。任一步 `fail` 直接置 `reviewStatus = 'rejected'` 并通知开发者。
+
 
 ### 3.3 REST API 端点（薄胶水）
 
@@ -327,6 +479,48 @@ export function checkCompatibility(
 
 Marketplace Portal（分类侧栏、列表网格、详情面板、开发者收入面板）是产品 UI，用现有组件库组装，数据全部来自上面的 API。评分展示、安装按钮、收入图表的具体设计属于产品设计，不在本 reference 展开。
 
+
+### 8.1 开发者收入面板 API
+
+开发者收入面板不能直接高频查 Stripe（Stripe API 有速率限制，且聚合查询不适合在线渲染）。正确做法：**每晚用定时任务把 Stripe 汇总同步到业务表 `developer_earnings`**，面板只读业务表：
+
+```typescript
+// packages/core/src/marketplace/earnings.ts —— 收入面板只读业务表
+import { db } from '@/lib/db';
+
+export interface EarningsSummary {
+  listingId: string;
+  grossCents: number;
+  platformFeeCents: number;
+  netCents: number;
+  periodStart: string;
+  periodEnd: string;
+}
+
+export async function listEarnings(developerId: string): Promise<EarningsSummary[]> {
+  const rows = await db.query(
+    `SELECT listing_id, gross_cents, platform_fee_cents, net_cents,
+            period_start, period_end
+     FROM developer_earnings
+     WHERE developer_id = $1
+     ORDER BY period_end DESC
+     LIMIT 100`,
+    [developerId],
+  );
+  return rows;
+}
+```
+
+**同步任务设计**：
+
+1. 每日 UTC 0 点跑一次（`BullMQ` 定时任务，见 [24-product-layer](./24-product-layer.md)）。
+2. 对每个开发者的 Connect 账户调用 Stripe 的余额交易/发票接口，把净额写入 `developer_earnings`。
+3. 同步任务只写业务表，**不做任何资金操作**——资金仍由 Stripe 记账。
+4. 面板上的“提现”按钮直接跳转 Stripe 托管 onboarding/管理页，业务侧不实现转账 UI。
+
+**为什么不能实时查 Stripe**：Stripe 的 `balance_transactions` 是账本视图，高频查询容易被限流；而且它返回的是“已发生交易”，不包含“已产生待入账的计量用量”，面板数字会跳动。业务表的快照口径与发票周期一致，更稳定。
+
+
 ## 9. 避坑汇总
 
 | 问题 | 原因 | 解法 |
@@ -356,6 +550,262 @@ Marketplace Portal（分类侧栏、列表网格、详情面板、开发者收�
 - [ ] **评分防刷**：运行 `pnpm vitest run marketplace/review`，断言同一用户 24h 内第 11 次评价被拒绝；同一 `(listing_id, user_id)` 只存在一行。
 - [ ] **分成结算**：运行 `pnpm vitest run marketplace/revenue`，mock Stripe `transfers.create`，断言金额 = `grossCents * DEVELOPER_SHARE` 取整。
 - [ ] **门禁回归**：`node tools/check-skill.mjs` 本文件 0 失败。
+
+---
+
+
+## 12. MCP 工具发布到官方 Registry
+
+MCP 是工具连接的事实标准（[14-mcp-server-dev](./14-mcp-server-dev.md)）。2026 年 MCP 官方 Registry（registry.modelcontextprotocol.io，preview）已收录近万个列表，是 Agent 工具被发现的主要入口。发布流程：
+
+1. 用 `@modelcontextprotocol/sdk` 实现 MCP Server（stdio 或 Streamable HTTP，见 [14-mcp-server-dev](./14-mcp-server-dev.md)）。
+2. 本地用 `@modelcontextprotocol/inspector` 逐工具验证：调用、参数、错误路径都要跑通。
+3. 把 MCP Server 发布为 npm 包（`npm publish --provenance`，见 14 节供应链安全）。
+4. 在 Registry 提交 listing：远程服务器填 `serverUrl`（Streamable HTTP + OAuth 2.1），本机工具填 `command`（stdio）。
+5. 平台审核通过后，用户可在 Agent 配置里一键安装；`verified: true` 的列表获得更高权重。
+
+```typescript
+// packages/core/src/marketplace/mcp-registry.ts
+// [CUSTOM] 组装提交到 MCP 官方 Registry 的清单数据（Registry 为 preview，字段以官方文档为准）
+import type { McpServerListing } from './types';
+
+export function buildMcpRegistryPayload(listing: McpServerListing): Record<string, unknown> {
+  return {
+    name: listing.listingId,
+    description: listing.tools.map((t) => t.description).join(' ').slice(0, 500),
+    tools: listing.tools.map((t) => t.name),
+    serverUrl: listing.mcpServerUrl,
+    command: listing.command,
+    verified: listing.verified,
+  };
+}
+```
+
+**审核通过的关键**：Registry 只接受“验证过能跑”的服务器。提交前用官方 Inspector 走一遍工具调用，把输出结果附在审核备注里；同时在 `README` 写清 `serverUrl`/`command` 与环境变量（注意不要写真实密钥）。
+
+## 13. GitHub 应用市场发布
+
+如果产品形态是 GitHub App（如自动 PR 审查 Agent、代码扫描机器人），走 GitHub Marketplace 发布：
+
+1. 用 **GitHub App Manifest** 一键创建应用（`POST /app-manifests/{code}/conversions`），免去手工填表单。
+2. 配置权限（Contents: read、Pull requests: write 等）与 Webhook 事件。
+3. 提交 Marketplace listing 审核（名称、图标、定价计划、隐私政策）。
+4. 审核通过后，用户通过 `installation` 安装应用，你拿到 `installation_token` 调用 GitHub API。
+
+```typescript
+// server/src/marketplace/github-app-manifest.ts —— GitHub App 市场接入
+import { Octokit } from '@octokit/rest';
+
+export async function convertAppManifest(code: string): Promise<{ id: number; slug: string }> {
+  const octokit = new Octokit();
+  const { data } = await octokit.request('POST /app-manifests/{code}/conversions', { code });
+  return { id: data.id, slug: data.slug };
+}
+```
+
+**注意**：GitHub Marketplace 对 `installation` 权限有严格审核，需要说明每个权限的用途；应用市场与普通 OAuth App 不同，不能静默要求超出权限。Webhook 的幂等消费继续复用 [24-product-layer](./24-product-layer.md) 的模式。
+
+## 14. 供应链安全：签名与校验
+
+### 14.1 SHA-256 校验
+
+所有下载包在安装前必须校验哈希。发布时计算并登记 `PackageArtifact.sha256`，安装器在解包前重新计算：
+
+```typescript
+// packages/core/src/marketplace/verify-artifact.ts
+import { createHash } from 'crypto';
+import { createReadStream } from 'fs';
+
+export async function sha256OfFile(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = createHash('sha256');
+    const stream = createReadStream(filePath);
+    stream.on('data', (chunk) => hash.update(chunk as Buffer));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', reject);
+  });
+}
+
+export function verifySha256(actual: string, expected: string): boolean {
+  return actual.toLowerCase() === expected.toLowerCase();
+}
+```
+
+### 14.2 npm provenance / Sigstore
+
+npm 包的发布者身份用 Sigstore 签名验证。`npm publish --provenance` 在 GitHub Actions 中自动生成签名，消费者用 `npm audit signatures` 或 `sigstore verify` 验证。流水线里的发布命令（[09-deploy](./09-deploy.md) 的 CI 模板）：
+
+```bash
+# 在 GitHub Actions 中发布带 provenance 的包
+npm publish --provenance --access public
+```
+
+### 14.3 安装器校验流程
+
+```typescript
+// packages/core/src/marketplace/installer.ts
+import { checkCompatibility } from './install';
+import { sha256OfFile, verifySha256 } from './verify-artifact';
+import type { PackageArtifact } from './types';
+
+export async function verifyBeforeInstall(params: {
+  artifact: PackageArtifact;
+  currentAgentCoreVersion: string;
+}): Promise<{ ok: boolean; reason?: string }> {
+  const compat = checkCompatibility(
+    params.currentAgentCoreVersion,
+    '0.1.0', // minAgentCoreVersion 来自 Listing
+  );
+  if (!compat.ok) return { ok: false, reason: compat.reason };
+
+  const actual = await sha256OfFile(params.artifact.url);
+  if (!verifySha256(actual, params.artifact.sha256)) {
+    return { ok: false, reason: 'sha256 mismatch' };
+  }
+
+  return { ok: true };
+}
+```
+
+> 说明：真实实现中 `minAgentCoreVersion` 从 `Listing` 读取，上面的 `'0.1.0'` 只是示意占位。校验通过后的解压、沙箱执行见 [04-sandbox](./04-sandbox.md)。
+
+## 15. 评分与分成进阶：Stripe Connect
+
+### 15.1 付费安装：Checkout 实时分账
+
+一次付费安装用 **Checkout + transfer_data** 实时分账：平台手续费 `application_fee_amount`，开发者分成在支付时自动转出，不需要事后定时打款：
+
+```typescript
+// packages/core/src/marketplace/connect-checkout.ts
+import Stripe from 'stripe';
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+
+export async function createPaidListingCheckout(params: {
+  listingName: string;
+  priceCents: number;
+  platformFeeCents: number;
+  developerConnectAccountId: string;
+}): Promise<string> {
+  const session = await stripe.checkout.sessions.create({
+    mode: 'payment',
+    line_items: [
+      {
+        price_data: {
+          currency: 'usd',
+          product_data: { name: params.listingName },
+          unit_amount: params.priceCents,
+        },
+        quantity: 1,
+      },
+    ],
+    payment_intent_data: {
+      application_fee_amount: params.platformFeeCents,
+      transfer_data: {
+        destination: params.developerConnectAccountId,
+      },
+    },
+    success_url: 'https://marketplace.example.com/install?session_id={CHECKOUT_SESSION_ID}',
+    cancel_url: 'https://marketplace.example.com/cancel',
+  });
+
+  return session.url ?? '';
+}
+```
+
+**金额一律用整数分**，禁止浮点运算；`platformFeeCents` 由 6 节的分成比例计算得出，且必须满足 Stripe 的平台费上下限规则。
+
+### 15.2 开发者 KYC：Connect Onboarding
+
+开发者第一次注册时，引导到 Stripe 的托管 onboarding 完成 KYC：
+
+```typescript
+// packages/core/src/marketplace/connect-onboarding.ts
+import Stripe from 'stripe';
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+
+export async function createOnboardingLink(accountId: string): Promise<string> {
+  const link = await stripe.accountLinks.create({
+    account: accountId,
+    refresh_url: 'https://marketplace.example.com/dev/settings/connect',
+    return_url: 'https://marketplace.example.com/dev/earnings',
+    type: 'account_onboarding',
+  });
+  return link.url;
+}
+```
+
+KYC 完成前，开发者 Listing 只能免费发布；KYC 通过后解锁付费发布与提现。这是合规要求，不是产品功能。
+
+### 15.3 订阅分成
+
+订阅类 Skill 的每次续费都要分成。用 `subscriptions` 模式 + `invoice.created` Webhook 监听下一张发票，把 `application_fee_percent` 设成分成比例。Webhook 幂等键见 [24-product-layer](./24-product-layer.md)。
+
+## 16. Trust & Safety：下架与申诉
+
+### 16.1 审核状态机
+
+审核状态机的合法迁移只有四条边，用函数约束而不是散落 if：
+
+```typescript
+// packages/core/src/marketplace/moderation.ts
+// [CUSTOM] 审核状态机：pending → approved / rejected；approved ⇄ suspended
+import type { Listing } from './types';
+
+export type ModerationAction = 'approve' | 'reject' | 'suspend' | 'reinstate';
+
+export function transition(listing: Listing, action: ModerationAction): Listing {
+  const next = { ...listing };
+
+  if (action === 'approve') {
+    if (listing.reviewStatus !== 'pending') throw new Error('only pending can be approved');
+    next.reviewStatus = 'approved';
+  } else if (action === 'reject') {
+    if (listing.reviewStatus !== 'pending') throw new Error('only pending can be rejected');
+    next.reviewStatus = 'rejected';
+  } else if (action === 'suspend') {
+    if (listing.reviewStatus !== 'approved') throw new Error('only approved can be suspended');
+    next.reviewStatus = 'suspended';
+  } else if (action === 'reinstate') {
+    if (listing.reviewStatus !== 'suspended') throw new Error('only suspended can be reinstated');
+    next.reviewStatus = 'approved';
+  }
+
+  return next;
+}
+```
+
+### 16.2 申诉流
+
+- 被 `rejected` 的开发者可以在 7 天内提交申诉（补充扫描报告、说明误报）。
+- 申诉单进入人工队列，管理员在后台复核；复核动作本身写入审计日志（[19-multi-tenancy](./19-multi-tenancy.md) 的 `audit_logs`）。
+- `suspended` 的 Listing 立即从 Discovery API 消失，但已安装用户保留（许可校验在 [19-multi-tenancy](./19-multi-tenancy.md) 层执行）。
+
+## 17. AI 避坑追加
+
+> 🤖 **AI 常见错误**：
+
+> 1. **只在根目录跑依赖审计** — 发布包是子目录，根目录 `npm audit` 扫不到。**检查方式**：`pnpm audit` 必须在 workspace 根执行（pnpm 自动覆盖全部包）；npm 项目进入 `packageDir` 再执行。
+
+> 2. **只扫依赖不扫源码** — 依赖再干净，源码里硬编码的云密钥照样泄露。**检查方式**：发布流水线必须包含 `trufflehog filesystem --json`，命中即拒绝。
+
+> 3. **Stripe 金额用浮点** — `0.7 * 19.99` 得到 13.993，转成分会丢精度。**检查方式**：所有金额 `Math.round` 成整数分后再传给 Stripe，测试断言 `amount % 1 === 0`。
+
+> 4. **MCP Registry 提交前不验证** — 工具列表与描述是手工填的，审核被拒。**检查方式**：提交前用 `@modelcontextprotocol/inspector` 跑通每个工具，`verified: true` 由平台侧标记。
+
+> 5. **审核状态机散落在各处** — 在 `approve` 和 `suspend` 逻辑里各写一份状态判断，状态可达性不可控。**检查方式**：所有状态变更走 `transition()` 单函数，非法迁移直接抛错。
+
+## 18. 本层验收清单（追加）
+
+- [ ] **安全扫描**：运行 `pnpm vitest run marketplace/security-scan-v2`，用含高危依赖、源码密钥、`eval(` 的恶意样例包，断言 `scanPackage` 返回 `dependencyRisk: fail` / `secretRisk: fail`，且安装被中止。
+- [ ] **哈希校验**：运行 `pnpm vitest run marketplace/verify-artifact`，断言 `verifySha256` 对篡改包返回 `false`。
+- [ ] **MCP Registry**：运行 `pnpm vitest run marketplace/mcp-registry`，断言 `buildMcpRegistryPayload` 输出含 `serverUrl`/`tools`/`verified` 字段，且 `description` 长度 ≤ 500。
+- [ ] **GitHub 市场**：mock `octokit.request('POST /app-manifests/{code}/conversions')`，断言返回 `id` 与 `slug`。
+- [ ] **实时分账**：mock `stripe.checkout.sessions.create`，断言 `payment_intent_data.application_fee_amount` 与 `transfer_data.destination` 正确传入。
+- [ ] **审核状态机**：运行 `pnpm vitest run marketplace/moderation`，断言四条合法迁移成功、非法迁移（如 `pending → suspended`）抛错。
+- [ ] **门禁回归**：`node tools/check-skill.mjs` 本文件 0 失败。
+
 
 ---
 

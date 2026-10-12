@@ -400,6 +400,8 @@ export async function runSecurityScan(skillDir: string): Promise<{
 }
 ```
 
+> 🤖 **AI 常见错误**：安全扫描只遍历 `**/*.{ts,js,mjs}` 源码，漏掉 `package.json` 的 `scripts` 钩子，恶意包安装时仍可通过 `postinstall` 执行任意命令。正确做法：扫描器必须 AST 解析 `package.json`，`scripts` 含 `preinstall/postinstall/prepare` 的包直接返回 `critical` 并中止安装，并把该规则接入 marketplace 发布流水线。
+
 ### 2.3 REST API 端点
 
 ```typescript
@@ -927,6 +929,8 @@ export async function validateLicenseKey(key: string, listingId: string): Promis
 }
 ```
 
+> 🤖 **AI 常见错误**：License Key 只校验 HMAC 签名与过期时间，不绑定设备，用户把同一 key 复制到多台机器即可绕过付费。正确做法：激活时把 license 绑定 `tenantId + deviceFingerprint`（如 `hash(platform + machineId)`），每次校验时比对指纹并要求 `redis.sismember('license:revoked', key)` 为空，集成测试断言同一 license 在第二台设备激活必须失败。
+
 ---
 
 ## 6. Sandbox 版本适配
@@ -1358,6 +1362,16 @@ export function ListingDetail({ listingId, onClose }: {
 > 2. **SKILL.md 的 frontmatter 注入攻击** — 解析第三方 SKILL.md 时把 `description` 字段直接拼入 `system prompt`，其中含 "ignore previous instructions" 指令。**检查方式**：所有外部 markdown 文件解析出 frontmatter 后，必须经 `PromptSanitizer.sanitizeVariable()` 处理；description 字段长度硬性限制 ≤ 500 字符。
 >
 > 3. **评分统计使用算术平均而非贝叶斯平均** — 新 Skill 获 1 个 5 星就排到头部，老 Skill 1000 个评价 4.8 分反而排在后面。**检查方式**：评分排序必须用贝叶斯平均 `(totalStars + C * globalMean) / (count + C)`，其中 C 是最小置信阈值（建议 10）；在排序函数中禁止裸 `.sort((a, b) => b.avgRating - a.avgRating)`。
+
+---
+
+## 10. 本层验收清单
+
+- [ ] 类型检查：在仓库根目录运行 `pnpm typecheck`，确认 `packages/core/src/marketplace/*.ts` 与 `apps/web` 市场页面全部通过。
+- [ ] 核心行为（安装安全扫描）：运行 `pnpm vitest run marketplace/security-scan`，用含 `postinstall` 钩子与 `eval(` 调用的恶意样例包，断言扫描器返回 `criticalIssues` 且安装流程被中止。
+- [ ] 边界场景（版本兼容）：构造 `minAgentCoreVersion` 高于当前 Agent Core 的 Skill，断言市场列表不展示、直接安装返回 409 错误提示。
+- [ ] 安全回归（License 绑定）：运行 `pnpm vitest run marketplace/license`，断言同一 license 在第二台设备激活失败，篡改 `deviceFingerprint` 后校验返回 `valid: false`。
+- [ ] 性能回归：运行 `pnpm vitest run marketplace/slug` 压测 slug 唯一性约束，断言 100 并发创建同名 Skill 仅 1 个成功，其余返回唯一性冲突错误。
 
 ---
 

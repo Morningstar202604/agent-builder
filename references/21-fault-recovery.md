@@ -349,6 +349,8 @@ export abstract class AbstractAgent {
 }
 ```
 
+> 🤖 **AI 常见错误**：快照序列化时直接 `JSON.stringify(snapshot)`，遇到 `AbortController`、`Writable` 等不可序列化对象时抛 `TypeError`，导致断线恢复彻底失败。正确做法：所有快照必须经过 `serializeState()` 递归过滤非 JSON-safe 值，写入前用 `structuredClone()` 做兼容性断言，并保留 `stream.lastEventId/lastEventSeq` 用于补发。
+
 ---
 
 ## 2. 断线重连恢复流程
@@ -753,6 +755,8 @@ async function waitForResult(key: string, timeoutMs = 5000): Promise<unknown> {
   return null; // 超时——调用方应检查并重试或返回错误
 }
 ```
+
+> 🤖 **AI 常见错误**：给远程 API 加幂等保护时只在首次调用前 `SET NX`，超时重试时直接再次执行 `fn()`，导致重复扣费或重复写入。正确做法：重试前必须读幂等缓存，状态为 `done` 直接返回结果，`pending` 超过 TTL 才归还锁，并用单测模拟「第一次超时、第二次成功」断言远程函数只执行一次。
 
 ---
 
@@ -1462,6 +1466,16 @@ export function AgentProgress({ sessionId }: { sessionId: string }) {
 > 2. **SSE 重连后 last-event-id 不连续** — 客户端断线重连时带上了旧的 `Last-Event-Id`，但 Redis stream 已被 `MAXLEN` 裁剪，服务端找不到该事件 ID，导致静默跳过所有历史消息。**ESLint 规则**：所有 SSE 重连逻辑必须检查 `resumed` 响应字段——如果服务端返回 `resumed: false`，客户端必须丢弃旧 event buffer 并执行全量恢复。
 >
 > 3. **模型降级后 token 预算未重算** — 从 GPT-4o 降级到 GPT-3.5-turbo 时，最大 context 从 128K 降到 16K，但 ContextManager 仍在按 128K 构建 prompt，导致第一条 API 报 `context_length_exceeded`。**检查方式**：ModelFallbackProvider 在切换模型时必须同步触发 `ContextManager.resizeBudget(newMaxTokens)`；所有 `buildContext()` 调用必须断言 `estimatedTokens <= model.maxContextTokens * 0.9`。
+
+---
+
+## 10. 本层验收清单
+
+- [ ] 类型检查：在仓库根目录运行 `pnpm typecheck`，确认 `packages/core/src/fault/*.ts` 全部通过，`AgentSnapshot` 与 `AbstractAgent.fromSnapshot()` 签名一致。
+- [ ] 核心行为（快照恢复）：运行 `pnpm vitest run fault/snapshot`，构造含 `AbortController` 字段的快照，断言序列化不抛错，恢复后消息历史、token 预算与断点一致。
+- [ ] 幂等性：运行 `pnpm vitest run fault/idempotency`，模拟「第一次超时、第二次成功」，断言远程函数只执行 1 次；重复调用 `safeWriteFile` 后文件内容不重复。
+- [ ] 边界场景（超时）：运行 `pnpm vitest run fault/timeout`，断言工具超时 30s 只返回 error 结果而不终止会话；Agent 单轮超时后返回 partial result 且快照已归档到 Postgres。
+- [ ] 性能回归：运行 `pnpm vitest run fault/retry` 压测 `withRetry`，断言指数退避加 jitter 后无惊群（同一时刻重试峰值小于 5），快照写入 P95 小于 5ms。
 
 ---
 

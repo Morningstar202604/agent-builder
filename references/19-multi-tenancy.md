@@ -121,6 +121,8 @@ CREATE ROLE agentcore_admin BYPASSRLS;
 -- 检查：SELECT rolname, rolbypassrls FROM pg_roles;
 ```
 
+> 🤖 **AI 常见错误**：给 Postgres 开启 RLS 后只执行 `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` 却不创建 `POLICY`，应用角色查询时被默认拒绝策略挡下，表现为「登录正常但所有查询报错」。正确做法：迁移脚本必须为每张表创建 `USING (tenant_id = current_setting('app.current_tenant_id')::UUID)` 的 POLICY，并在 CI 中执行 `SET app.current_tenant_id = '<tenant-id>'` 后断言跨租户查询返回 0 行。
+
 ---
 
 ## 2. Tenant Context 注入
@@ -592,6 +594,8 @@ export class ForbiddenError extends Error {
   }
 }
 ```
+
+> 🤖 **AI 常见错误**：实现 `requirePermission()` 中间件时只信任 JWT 解码出的 `role` 字段，未检查 Redis 黑名单，已注销员工的旧 token 仍可调用管理接口。正确做法：受保护路由必须统一经过 `requirePermission()` 包装，且 `jwt.verify()` 之后额外执行 `redis.sismember('token:blacklist', payload.jti)` 校验；ESLint 规则可禁止路由 handler 直接调用 `jwt.verify()` 而不经过该包装。
 
 ### 4.3 与 ToolRegistry 集成
 
@@ -1240,5 +1244,15 @@ export function AuditLogPanel() {
 > 2. **共享内存数据结构泄露租户上下文** — 用 `new Map()` 做内存缓存时 key 不含 tenantId，不同租户的请求命中同一缓存条目。**检查方式**：所有 in-memory cache 的 key 必须包含 `tenantId` 前缀（如 `${tenantId}:${queryHash}`），用 ESLint plugin 检测 `Map.set(` 调用是否包含 tenant 标识。
 >
 > 3. **JWT 解码后跳过角色校验** — 从 JWT 解析出 `role: 'admin'` 后直接信任，但 JWT 过期或被吊销后仍可通过复用旧 token 绕过。**检查方式**：所有 `requireRole('xxx')` 中间件必须在验证 JWT signature 之后额外检查 Redis 黑名单；`jwt.verify()` 必须配置 `maxAge` 和 `clockTolerance`。
+
+## 11. 本层验收清单
+
+- [ ] 类型检查：在仓库根目录运行 `pnpm typecheck`，确认 `packages/core/src/tenant/*.ts` 全部通过，`TenantContext` 在 middleware 中显式设置并在 `asyncLocalStorage.run()` 包裹内消费。
+- [ ] 核心行为（租户隔离）：运行 `pnpm vitest run tenant/isolation`，断言「租户 A 写入 → 切换租户 B 搜索」返回 0 条结果；不带 `requireTenantFilter()` 的 SQL 在测试中必须抛错。
+- [ ] 边界场景（RLS）：对 Postgres 执行 `SET app.current_tenant_id = '<tenant-id>'` 后查询仅返回该租户数据；未设置该 GUC 的会话查询返回 0 行而非泄露全部数据。
+- [ ] 安全回归（JWT 黑名单）：运行 `pnpm vitest run tenant/auth`，断言 JWT 签名有效但 jti 已在黑名单的请求返回 401；离职员工 token 无法访问 `members:manage` 接口。
+- [ ] 性能回归：运行 `pnpm vitest run tenant/perf` 压测 Redis 限流中间件，断言使用 Redis Pool 复用连接后 P99 延迟小于 50ms，1000 并发下无连接耗尽错误。
+
+---
 
 *本节点属于 Layer 4 企业能力层。多租户不是"加个 tenant_id 列"就完了——它触及请求链路（middleware）、存储层（RLM/postgres RLS）、缓存层（key 命名）、工具层（文件隔离）、计费层（用量统计）、安全层（审计日志）的每一个环节。做错了任何一个点，后果都是跨租户数据泄漏——在这个量级的安全事件面前，"我加了 tenant_id"不是辩护理由。演进路径：先在应用层做 tenant_id 过滤（最快上线），然后加 RLS 策略（零代码迁移，纯 SQL migration），最后给大客户做独立数据库（运维最高）。*

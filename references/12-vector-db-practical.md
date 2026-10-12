@@ -285,6 +285,8 @@ async upsertAndWait(
 
 ### 2.3 搜索与 Payload 过滤
 
+> 🤖 **AI 常见错误**：向量搜索不设相似度阈值，把完全不相关的 top-k 结果当答案返回给 LLM。Qdrant `search()` 若省略 `score_threshold`，任意查询都会返回 K 条结果，即使相似度只有 0.1。正确做法：调用 `search()` 时传入 `scoreThreshold`（0.7-0.8），或在应用层过滤低于阈值的命中。**检查方式**：单元测试断言无关查询在 `scoreThreshold: 0.7` 下返回空数组。
+
 ```typescript
 // packages/core/src/memory/vectorstore-qdrant.ts (续)
 
@@ -394,6 +396,10 @@ async searchWithFilter(
     filter: { must },
   });
 }
+```
+
+```typescript
+// packages/core/src/memory/vectorstore-qdrant.ts —— Qdrant 过滤器类型（类外定义）
 
 /**
  * Qdrant 过滤器的类型定义
@@ -1812,3 +1818,10 @@ export function VectorDBPanel() {
 > 7. **Reranker 候选数过少**：用向量检索召回 5 个文档然后 Rerank，Rerank 几乎没意义（候选太少）。标准做法是召回 K×3（如 15-30 个），让 Reranker 有足够空间区分优劣。
 >
 > 8. **Milvus 不加载 Collection**：Milvus 需要显式 `loadCollectionSync` 将数据加载到内存后才能搜索。忘记这一步会导致搜索返回空结果但不报错（静默失败）。
+
+## 10. 本层验收清单
+
+- [ ] 类型检查：运行 `npx tsc --noEmit -p packages/core`，确认 `vectorstore-qdrant.ts`、`embedding-cache.ts` 中 `QdrantClient.search` 的 `score_threshold`、`filter` 参数类型与 SDK 声明一致，无类型错误。
+- [ ] 核心行为：运行 `npx vitest run packages/core/src/memory/__tests__/vectorstore.test.ts`，断言写入 3 条记忆后按相同 embedding 查询能召回，无关查询在 `scoreThreshold: 0.7` 下返回空数组。
+- [ ] 边界场景：测试 embedding 维度不一致时（写入 1024 维、查询 1536 维）能抛出可读错误，而不是静默返回空结果。
+- [ ] 安全/性能回归：运行 `node tools/check-skill.mjs` 确认本文件无 PROMISE 失败；检查高频 payload 过滤字段（userId）已建索引，批量 upsert 在断网重试后无数据丢失。

@@ -391,7 +391,10 @@ agent-core/
 │   └── electron/               # Electron wrapper
 ├── packages/
 │   ├── core/                   # Framework-independent agent engine
-│   └── shared/                 # Shared types/constants
+│   ├── shared/                 # Shared types/constants
+│   ├── mcp-servers/             # MCP server 实现（references/14）
+│   └── web/                    # 前端共享组件（references/23 等）
+├── server/                     # Fastify/Node 后端（references/07-09）
 ├── .env.example
 ├── turbo.json
 ├── pnpm-workspace.yaml

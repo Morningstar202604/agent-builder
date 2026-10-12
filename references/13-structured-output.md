@@ -190,7 +190,7 @@ Output ONLY the JSON object, nothing else.`;
     return this.callPlain(systemPrompt, userMessage);
   }
 
-  ...callMethods在下面展开...
+  // ... 其余方法（callWithAnthropicToolMode / callPlain）在下面展开 ...
 
   /**
    * 最终兜底：用 LLM 自己把错误 JSON 修正为合规 JSON
@@ -282,7 +282,7 @@ private async callWithAnthropicToolMode(systemPrompt: string, userMessage: strin
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
-      'x-api-key': this.llmClient.apiKey,
+      'x-api-key': process.env.ANTHROPIC_API_KEY ?? this.llmClient.apiKey,
       'anthropic-version': '2023-06-01',
       'Content-Type': 'application/json',
     },
@@ -366,6 +366,8 @@ private async callPlain(systemPrompt: string, userMessage: string): Promise<stri
 │              │ - 适合本地部署场景                                           │
 └──────────────┴───────────────────────────────────────────────────────────┘
 ```
+
+> 🤖 **AI 常见错误**：JSON Mode 下不设 `additionalProperties: false`，模型输出 schema 未定义的字段时，Zod 默认 `.parse()` 会静默剥离多余字段，看起来"成功"但关键数据可能被丢弃。正确做法：OpenAI 用 `strict: true`（自动禁止额外属性），自建 JSON Schema 显式声明 `additionalProperties: false`，Zod 侧用 `z.object({...}).strict()` 拒绝未知字段。**检查方式**：单测断言 `z.object({a: z.string()}).strict().parse({a: "x", b: 1})` 抛错。
 
 ### Gemini JSON Mode 完整代码
 
@@ -473,6 +475,8 @@ function convertToGBNF(schema: any): string {
 ## 3. Loose JSON Parser（容错解析）
 
 **工程逻辑**：即使启用了 JSON Mode，模型仍可能包裹 Markdown、加注释、末尾多逗号。一个鲁棒的解析器是结构化输出的最后一道防线。
+
+> 🤖 **AI 常见错误**：把 `parseLooseJson` 的返回值直接当可信结果使用，不再做 Zod 校验。容错解析只能修复格式错误（Markdown 包裹、尾逗号），字段缺失和类型漂移（如 `"42"` 代替 `42`）依然会通过。正确做法：解析后必须再过 `schema.safeParse()`，失败时把 Zod 错误信息注入重试流程。**检查方式**：单测构造 `parseLooseJson` 能"修复"但 `schema.parse` 仍失败的输入，断言会进入重试分支而不是直接返回数据。
 
 ```typescript
 // packages/core/src/llm/loose-json-parser.ts
@@ -969,3 +973,10 @@ ude Haiku）有时仍会在 JSON 外面加 ```或文字说明。必须先走 Loo
 格模式或在 system prompt 中声明"不接受未定义字段"。
 >
 > 8. **流式场景的结构化输出**：在 SSE 流式响应中使用 JSON Mode 会有问题——模型输出的每个 chunk 可能不是完整 JSON，中间状态时 parseLooseJson 会提前"截获"半个 JSON 并误判为截断错误。流式场景应在 `done` event 触发后才做完整解析，中间 chunk 只做展示。
+
+## 7. 本层验收清单
+
+- [ ] 类型检查：运行 `npx tsc --noEmit -p packages/core`，确认 `structured-output.ts`、`loose-json-parser.ts`、`gemini-json-mode.ts` 通过类型检查。
+- [ ] 核心行为：运行 `npx vitest run packages/core/src/llm/__tests__/structured-output.test.ts`，断言 `StructuredOutputEngine.generate` 在模型输出被 Markdown 包裹时仍能返回符合 schema 的数据，重试次数 ≤ maxRetries。
+- [ ] 边界场景：单测覆盖 `max_tokens` 截断半个 JSON、尾逗号、单引号、字段缺失、类型漂移（`"42"` vs `42`）等输入，断言 `parseLooseJson` 修复后必须再过 `schema.safeParse()`。
+- [ ] 安全回归：断言 `z.object({...}).strict()` 对未知字段抛错；运行 `node tools/check-skill.mjs` 确认本文件无 PROMISE 失败。

@@ -1807,4 +1807,10 @@ Agent 生成回答 → Reflection 评估质量 → 评估通过 → Agent 尝试
 
 ---
 
+## 19. 本层验收清单
 
+- [ ] 类型检查通过：在仓库根目录运行 `npx tsc --noEmit`，预期 0 个类型错误，风险分级器、审批引擎、Reflection Loop 及前端审批中心相关模块全部通过编译
+- [ ] 规范检查通过：运行 `node tools/check-skill.mjs`，预期本文件不再报 PROMISE 失败（至少 3 个 🤖 标记 + 存在验收清单章节）
+- [ ] 核心行为可运行：执行 `curl 'http://localhost:3000/api/hitl/approve' -H 'Content-Type: application/json' -d '{"requestId":"demo-1","decision":"approve"}'`，预期高风险工具调用在审批通过后继续执行、拒绝后中止；Reflection 循环在 LLM-as-Judge 返回合法评分时正常收敛
+- [ ] 边界场景：模拟审批超时（超过配置的 timeout 未响应），预期请求自动 cancel 且工具不执行；LLM-as-Judge 返回非法 JSON 时，预期评估器重试或降级而非默认给分；反射达到迭代上限后强制退出
+- [ ] 安全/性能回归：对评估提示词注入样本进行测试，预期注入内容不改变评分逻辑；连续 100 次 HITL 审批 + Reflection 循环，预期无 modified 状态丢失、无死循环，端到端耗时符合性能基线

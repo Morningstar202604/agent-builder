@@ -1928,7 +1928,7 @@ export class OtlpHttpExporter implements SpanExporter {
     const otlpBatch = {
       resourceSpans: [
         {
-          resource: { attributes: [{ key: 'service.name', value: { stringValue: 'agent-core' } } }],
+          resource: { attributes: [{ key: 'service.name', value: { stringValue: 'agent-core' } } ] },
           scopeSpans: [
             {
               spans: batch.map((s) => ({
@@ -2445,35 +2445,35 @@ export class HookExecutor<TContext = unknown> {
 
   fireGuardrailComplete(
     ctx: TContext,
-    result: Parameters<NonNullable<RunHooks<TContext>['onGuardrailComplete']>[1],
+    result: Parameters<NonNullable<RunHooks<TContext>['onGuardrailComplete']>>[1],
   ): void {
     this.fireHook('onGuardrailComplete', ctx, result);
   }
 
   fireGuardrailTriggered(
     ctx: TContext,
-    event: Parameters<NonNullable<RunHooks<TContext>['onGuardrailTriggered']>[1],
+    event: Parameters<NonNullable<RunHooks<TContext>['onGuardrailTriggered']>>[1],
   ): void {
     this.fireHook('onGuardrailTriggered', ctx, event);
   }
 
   fireLLMCallComplete(
     ctx: TContext,
-    result: Parameters<NonNullable<RunHooks<TContext>['onLLMCallComplete']>[1],
+    result: Parameters<NonNullable<RunHooks<TContext>['onLLMCallComplete']>>[1],
   ): void {
     this.fireHook('onLLMCallComplete', ctx, result);
   }
 
   fireToolCallComplete(
     ctx: TContext,
-    result: Parameters<NonNullable<RunHooks<TContext>['onToolCallComplete']>[1],
+    result: Parameters<NonNullable<RunHooks<TContext>['onToolCallComplete']>>[1],
   ): void {
     this.fireHook('onToolCallComplete', ctx, result);
   }
 
   fireAgentEnd(
     ctx: TContext,
-    result: Parameters<NonNullable<RunHooks<TContext>['onAgentEnd']>[1],
+    result: Parameters<NonNullable<RunHooks<TContext>['onAgentEnd']>>[1],
   ): void {
     this.fireHook('onAgentEnd', ctx, result);
   }
@@ -3000,6 +3000,19 @@ export interface RunResult {
 ```
 
 ---
+
+---
+
+## 14. 本层验收清单
+
+> 完成本层后，用以下步骤验证护栏与可观测性实现符合预期（可在本地或 CI 执行）：
+
+- [ ] **类型检查**：运行 `npx tsc --noEmit`，确认第 22 层所有 TypeScript 示例无语法错误。
+- [ ] **门禁回归**：运行 `node tools/check-skill.mjs`，确认 `22-guardrails-tracing.md` 的所有代码块通过语法解析，且本文件包含至少 3 条 🤖 避坑标记与本节验收清单。
+- [ ] **Input/Output Guardrail**：构造含 PII 与提示注入的测试输入，确认 `Tripwire` 在并行模式（`Promise.all` 零延迟叠加）下正确拦截，且 `tripwireHalt` 能中断 Agent 循环。
+- [ ] **Tool Guardrails**：对 `delete | payment | restart` 等高危工具动作，断言 `SafetyPolicy.stdAndAbove` 拒绝执行并写入审计日志（`approved/denied` 不可缺省为 true）。
+- [ ] **可观测性**：用 Langfuse/OTLP 导出器发送一批 span，确认 `traceId` 关联、token 成本字段、`BatchSpanProcessor` 批量导出与告警规则全部生效。
+- [ ] **Hooks 生命周期**：触发 `onGuardrailComplete` / `onLLMCallComplete` 等回调，确认异常被捕获且不阻塞主调用栈；`fireHook` 在 `setImmediate` 中执行且 Promise 被 resolve。
 
 *本节点属于 Layer 5 护栏与可观测性层。Guardrails 是 Agent 的免疫系统——缺少它们等于让 LLM 的任意输入/输出暴露在攻击下；Tracing 是 Agent 的神经系统——没有可观测性，生产环境的 Agent 就是一个黑盒，出了问题只能靠用户反馈猜测原因。*
 

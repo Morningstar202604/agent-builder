@@ -190,6 +190,10 @@ export class OpenAIAdapter implements ToolCallAdapter {
 }
 ```
 
+🤖 **AI 常见错误**：在 `parseToolCalls` 里直接 `JSON.parse(tc.function.arguments)` 而不做空值兜底——`arguments` 为 `undefined` 或空字符串时抛 `SyntaxError` 中断整个流式响应，且解析失败后没有保留原始 `_raw` 给重试引擎修复。正确做法：先 `tc.function.arguments || '{}'` 再 `try/catch`，失败时保存 `_raw` 并标记 `_parseError`，交由 `ToolCallRetryEngine` 修复或让 LLM 重新生成。
+
+---
+
 ### Anthropic 格式适配
 
 ```typescript
@@ -538,6 +542,10 @@ export class ToolCallRetryEngine {
 当一轮 ReAct 循环中 LLM 返回 3 个无依赖关系的工具调用（比如同时搜索天气、读取文件、查数据库），串行执行浪费时间。并行执行可以把总耗时从 T1+T2+T3 降低到 max(T1, T2, T3)。
 
 🔗 **工程逻辑**：并行工具调用有前提——工具之间没有数据依赖。如果工具 B 的输入是工具 A 的输出，必须串行。LLM 有时会"自作主张"把有依赖的工具放在同一轮并行调用里——这时要么检测到依赖自动降级为串行，要么全部执行然后让 LLM 由处理乱序结果。当前实现选择后者（信任 LLM + maxRounds 兜底）。
+
+🤖 **AI 常见错误**：并行调度用 `Promise.all(tools.map(...))` 而不是 `Promise.allSettled`——任何一个工具抛异常都会让整批 promise reject，其余工具的成功结果与审计日志一起丢失，前端只能看到未知错误。正确做法：统一用 `Promise.allSettled`，逐项检查 `status`，`fulfilled` 记录结果、`rejected` 转成 `error` 结果回喂 LLM 继续修正。
+
+---
 
 ### Promise.allSettled 实现
 

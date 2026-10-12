@@ -1613,3 +1613,11 @@ docker run
 | 阶段 3（生产） | Qdrant 集成、异常检测、CI/CD 自动构建扫描、Rerank | 生产部署，需要安全审计和自动化运维 | 阶段 1+2 完成 |
 
 > 🤖 **重要提醒**：在阶段 1 MVP 中，InMemoryVectorStore 可以让记忆/RAG 功能先跑起来，但生产环境必须切换到 Qdrant 等真正的向量数据库——内存版进程退出后数据全部丢失，且搜索是 O(N) 暴力扫描，性能不可接受。
+
+## 本层验收清单
+
+- [ ] 类型检查通过：在仓库根目录运行 `npx tsc --noEmit`，预期 0 个类型错误，`DockerSandbox`、`SandboxManager`、`execute_code` 工具及 `useSandboxExecution` Hook 全部通过编译
+- [ ] 规范检查通过：运行 `node tools/check-skill.mjs`，预期本文件不再报 PROMISE 失败（至少 3 个 🤖 标记 + 存在验收清单章节）
+- [ ] 核心行为可运行：执行 `docker compose up -d` 启动沙箱依赖后，运行沙箱集成测试（如 `npm run test:sandbox`），预期 `execute_code` 能执行一段 Python 脚本并回传 stdout/stderr，事件流按 `sandbox_start` → `sandbox_complete` 顺序结束
+- [ ] 边界场景：向沙箱提交死循环脚本、超大输出、非法命令三种输入，预期分别触发执行超时、输出截断和工具报错，容器在超时后由 `SandboxManager` 强制终止并销毁，宿主无残留进程
+- [ ] 安全/性能回归：运行安全测试套件（seccomp/cap-drop/只读文件系统/网络隔离用例），预期全部通过且 `SandboxAuditor` 的 JSONL 日志为 append-only；并发提交 20 个任务，预期队列排队正常、无容器复用、单任务额外开销符合性能基线

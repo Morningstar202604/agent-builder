@@ -433,6 +433,10 @@ export class PromptTemplate {
 }
 ```
 
+🤖 **AI 常见错误**：手写模板解析时用 `new RegExp('{{' + key + '}}')` 直接拼接变量名而不做正则转义——变量名含 `.`、`*` 等元字符时匹配错位甚至抛异常，用户输入含 `{{system_prompt}}` 时还会被二次解析成模板变量造成注入。正确做法：先对定界符做 `escapeRegExp`（如本节点 `escapedOpen`/`escapedClose`），变量名用 `\w+` 白名单捕获，渲染后再检查一次结果是否残留 `{{...}}`。
+
+---
+
 ### 模板文件示例
 
 ```markdown

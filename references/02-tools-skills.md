@@ -1226,7 +1226,7 @@ export class MCPClient {
         } catch (error) {
           throw new Error(`MCP tool "${mcpTool.name}" failed: ${error instanceof Error ? error.message : String(error)}`);
         }
-    }));
+    }}));
   }
 
   async callTool(call: MCPToolCall): Promise<MCPResult> {
@@ -2378,3 +2378,11 @@ Chat Area
 ├── ContextUsageBar     → Token 用量实时进度条
 └── ChatInput
 ```
+
+## 本层验收清单
+
+- [ ] 类型检查通过：在仓库根目录运行 `npx tsc --noEmit`，预期 0 个类型错误，且 `packages/core`、`packages/web`、`server/src` 下所有引用工具注册表、MCP 客户端与 Skill 管理器的模块均可通过编译
+- [ ] 规范检查通过：运行 `node tools/check-skill.mjs`，预期本文件不再报 PROMISE 失败（至少 3 个 🤖 标记 + 存在验收清单章节）
+- [ ] 核心行为可运行：启动前后端后执行 `curl 'http://localhost:3000/api/chat' -H 'Content-Type: application/json' -d '{"message":"列出可用工具并调用一次"}'`，预期事件流中依次出现 `tool_start` / `tool_complete`，且 `ContextUsageBar` 显示的 token 用量随消息轮次递增、压缩后出现 COMPRESSED 标记
+- [ ] 边界场景：断开 MCP server 后再次调用其工具，预期返回 `tool_error` 事件并携带超时/连接失败原因，前端 ToolCallCard 显示 error 状态，Agent 主循环不崩溃并继续下一轮
+- [ ] 安全/性能回归：连续 50 轮对话触发 3 次上下文压缩，记录压缩前后 token 数与耗时，预期压缩后用量显著下降、单次压缩耗时符合性能基线；工具参数校验对非法 JSON 返回 4xx 而非 500

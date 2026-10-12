@@ -696,6 +696,8 @@ export async function multiJudge(
 
 🔗 **工程逻辑**：回归检测的核心价值在于 CI 自动化。如果你只跑 eval 不对比历史，那每次跑完你只知道"这次分了多少"——不知道"上次多少"。跟历史报告做 diff，一旦 `scoreDelta` 超过阈值 `REGRESSION_THRESHOLD=1.5`，CI 自动失败，阻止退化代码合入 main 分支。
 
+🤖 **AI 常见错误**：在回归检测里直接用 `curr.verdict.score - prev.verdict.score` 计算 delta——某次调用缺少 `verdict.score`（模型未打分）时差值为 `NaN`，`NaN <= -REGRESSION_THRESHOLD` 恒为 false，退化被静默漏报。正确做法：取差前先对 `score` 做 `?? 0` 兜底，并用 `Number.isFinite(delta)` 过滤非法值后再参与判定。
+
 ```typescript
 // server/src/eval/regression.ts
 
@@ -1896,3 +1898,13 @@ export async function GET() {
 ---
 
 *本节点属于 Layer 3 工程化层。Eval 框架和可观测性是一体的两面——eval 告诉你"质量如何"（离线指标），可观测性告诉你"运行时如何"（在线指标）。两者配合，才能让 Agent 系统从 Demo 进化为可维护的产品。实现时注意：eval 的 passThreshold 必须逐条设定（不设就是永远通过），trace span 的 end() 必须放在 finally 里（否则异步异常会丢 span）。*
+
+---
+
+## 08 本层验收清单
+
+- [ ] **类型检查**：在仓库根目录执行 `pnpm typecheck`，`server/src/eval/**`、`server/src/observability/**` 与 `apps/web/src/app/api/eval/**` 无类型错误。
+- [ ] **回归检测核心行为**：运行 `pnpm vitest run server/src/eval`（或 `pnpm exec tsx` 跑单测），构造上次 8.0 分、本次 6.0 分的对比报告，`detectRegression` 返回 `hasRegression: true`、`regressionCases` 非空且 delta = -2.0。
+- [ ] **Judge 边界解析**：给 Judge 用例喂带 markdown 代码围栏的 LLM 输出，`parseJudgeVerdict` 能剥离围栏后 `JSON.parse` 成功；完全不规范的输出返回错误而不是抛未捕获异常。
+- [ ] **Token 追踪**：用 mock LLM 跑一次带工具调用的 Agent 循环，`TokenTracker.getSessionSummary` 的 tokens/calls 与 LLM 回包 `usage` 字段一致；未知模型走平均价分支不崩溃。
+- [ ] **安全与性能回归**：grep 确认所有 `logger.info/warn/error/debug` 调用点都在参数上执行过 `redactSensitive`；`NODE_ENV=production` 时使用 `BatchSpanProcessor`，`DEBUG !== '1'` 时 debug 日志不落盘。

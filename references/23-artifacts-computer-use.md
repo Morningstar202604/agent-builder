@@ -3660,7 +3660,7 @@ export class SubAgentOrchestrator {
 >
 > 1. **所有东西都用 Artifact 渲染**：AI 倾向于将每个超过 20 行的输出都包装为 Artifact，导致对话流充满"独立窗口"，用户体验割裂。**检查方式**：`decideArtifactUse()` 函数必须严格执行——`<15 行代码块`、`纯文本解释`、`"用户要求对话里显示"` 三种情况绝对不能使用 Artifact。如果检测到 Artifact 使用率 > 30%（正常应为 5-10%），说明决策引擎配置有问题。
 >
-> 2. **Computer Use 对破坏性操作不确认**：AI 模型可能直接执行 `click(关闭按钮)` 或 `type(删除命令)` 而不经过用户确认，导致数据丢失。**检查方式**：所有 Computer Action 在执行前必须经 `SafetyGuard.check()` 评估；`SafetyPolicy.stdAndAbove` 级别的策略中 `delete|remove|payment|restart` 等动作必须弹确认对话框。审计日志需要记录每次确认的 result（approved/denied），不可缺省为 true。
+> 🤖 2. **Computer Use 对破坏性操作不确认**：AI 模型可能直接执行 `click(关闭按钮)` 或 `type(删除命令)` 而不经过用户确认，导致数据丢失。**检查方式**：所有 Computer Action 在执行前必须经 `SafetyGuard.check()` 评估；`SafetyPolicy.stdAndAbove` 级别的策略中 `delete|remove|payment|restart` 等动作必须弹确认对话框。审计日志需要记录每次确认的 result（approved/denied），不可缺省为 true。
 >
 > 3. **Headless 模式未设置 --max-turns 上限**：在 CI/CD 场景中，如果 Agent 陷入无限循环（模型反复调用同一个工具期望不同结果），每次调用的成本和延迟都会累积，最终 CI 运行 4 小时后才超时。**检查方式**：所有 Headless Session 必须强制设置 `maxTurns`（推荐 10-30）；CI 环境集成时必须有 `timeoutSeconds`（推荐 300-600s）作为第二层保护。断言 `config.maxTurns >= 5 && config.maxTurns <= 100`。
 >
@@ -3670,13 +3670,26 @@ export class SubAgentOrchestrator {
 >
 > 6. **CLAUDE.md 当作无限上下文仓库**：AI 引导用户把 CLAUDE.md 写得越来越长（几百 KB），以为"写得越多模型越听话"。实际上大约在 50KB 之后模型注意力急剧下降，后面的规则被完全忽略。**检查方式**：启动时调用 `validateClaudeMdSize()` 检查 CLAUDE.md 大小；超过 20KB 警告、超过 50KB 强制报错要求用户精简。推荐的结构是：关键规则写 CLAUDE.md（< 10KB），细节文档放在单独的 `/docs/` 目录按需加载。
 >
-> 7. **Playwright 与 Computer Use 模式混淆**：AI 经常在不适用 Computer Use 的场景使用 Computer Use——例如用户说"打开 baidu.com 搜 Python 教程"，Agent 需要截图 → 解析 → 点搜索框 → 输入 → 点搜索按钮（5 步循环，每次 2s 延迟）才能完成 Playwright Playwright 一行代码 `page.goto('https://baidu.com'); page.fill('#kw','Python 教程'); page.click('#su')` 只 0.5s 的事。**检查方式**：决策树第一层判断"目标是否是浏览器Web 应用？如果是 → 优先 Playwright；如果是桌面应用或无 API 但有 UI → 用 Computer Use；如果 API 可用 → 直接调 API"。
+> 🤖 7. **Playwright 与 Computer Use 模式混淆**：AI 经常在不适用 Computer Use 的场景使用 Computer Use——例如用户说"打开 baidu.com 搜 Python 教程"，Agent 需要截图 → 解析 → 点搜索框 → 输入 → 点搜索按钮（5 步循环，每次 2s 延迟）才能完成 Playwright Playwright 一行代码 `page.goto('https://baidu.com'); page.fill('#kw','Python 教程'); page.click('#su')` 只 0.5s 的事。**检查方式**：决策树第一层判断"目标是否是浏览器Web 应用？如果是 → 优先 Playwright；如果是桌面应用或无 API 但有 UI → 用 Computer Use；如果 API 可用 → 直接调 API"。
 >
 > 8. **Stream-Json 输出中夹带非 JSON 文本**：AI 在 stream-json 输出模式中偶尔在 JSON 行中插入非 JSON 文本（如注释或模型理由），导致下游 JSON 解析器崩溃。**检查方式**：`OutputFormatter` emit 时必须针对 `stream-json` 模式做 JSON.stringify 验证；每行输出必须以 `{` 开头并以 `}` 结尾；使用 `NDJSON` 库（如 `split2` + `ndjson`）消费，任何 parse error 行跳过后继续而非终止。
 >
 > 9. **Sub-agent 上下文泄漏**：AI 没有完全隔离子 agent 的上下文，导致子 agent 知道了主会话的内部信息（如用户身份、敏感文件路径），违反最小权限原则。**检查方式**：SubAgentTask 必须明确 `contextIsolation: true`；子 agent 的 system prompt 中不包含用户身份、未被授权的文件路径；子 agent 的 `allowedTools` 严格白名单（如只能 `Read + Glob`，禁止 `Write + Bash`）。断言 `subAgent.allowedTools.every(t => leadAgentTools.includes(t))`。
 >
 > 10. **Hooks 逻辑写入 Harness 层而非业务层**：AI 把所有钩子逻辑（prompt 脱敏、错误拦截、工具改写）都堆在 `HooksEngine` 中，导致 Harness 框架和业务逻辑耦合，更换 Harness 时所有逻辑失效。**检查方式**：HooksEngine 应只提供基础设施（中间件管道）；具体 hook 函数应放在业务代码中（如 `setupSecurityHooks()`, `setupCustomThemeHooks()`）；测试时 hook 可被 mock，不依赖 Harness 实现细节。
+
+---
+
+## 7. 本层验收清单
+
+> 完成本层后，用以下步骤验证 Artifacts / Computer Use / Headless 实现符合预期（可在本地或 CI 执行）：
+
+- [ ] **类型检查**：运行 `npx tsc --noEmit`，确认第 23 层所有 TypeScript 示例无语法错误。
+- [ ] **门禁回归**：运行 `node tools/check-skill.mjs`，确认 `23-artifacts-computer-use.md` 的所有代码块通过语法解析，且本文件包含至少 3 条 🤖 避坑标记与本节验收清单。
+- [ ] **Artifact 决策**：构造 `<15 行代码块` 与 `纯文本解释` 输入，断言 `decideArtifactUse()` 不创建 Artifact；对 `stream-json` 模式验证每行输出以 `{` 开头并以 `}` 结尾。
+- [ ] **Computer Use**：执行 `delete / payment / restart` 等高危动作，确认 `SafetyGuard.check()` 弹出确认框，审计日志记录每次确认结果（approved/denied）。
+- [ ] **Headless 模式**：设置 `maxTurns: 10` 与 `timeoutSeconds: 300`，确认 Agent 无限循环会被强制终止；中断会话后用 `canResume()` 验证快照完整性并注入摘要消息。
+- [ ] **Harness 边界**：构造 >50KB 的 CLAUDE.md，确认 `validateClaudeMdSize()` 强制报错；检查 `SubAgentTask.contextIsolation` 为 true 且子 agent 工具为白名单。
 
 ---
 

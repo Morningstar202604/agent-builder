@@ -323,7 +323,7 @@ export class SubTokenStreamer {
   }
 
   /** 接收来自 LLM 的一个 token */
-  feed(token: string): void {
+  feed(chunk: string): void {
     this.buffer += token;
 
     // 达到阈值就立即推
@@ -597,7 +597,7 @@ export function formatSSEEvent(event: string, data: any): string {
   if (typeof data === 'string') {
     lines.push(`data: ${data}`);
   } else {
-    lines.push(`data: ${JSON.stringify(data)}`;
+    lines.push(`data: ${JSON.stringify(data)}`);
   }
 
   // 添加事件 ID（用于重连后恢复）
@@ -1110,6 +1110,17 @@ useEffect(() => {
 **问题**：SSE 断流后 `onerror` 被触发，但开发者没有实现重连逻辑。用户看到"AI 说了一半就不说了"。
 
 **解决**：SSE 客户端必须实现指数退避重连（如 ResilientSSEClient）。建议在 3 次重连失败后显示"连接中断，请重试"的明显提示，而不是静默失败。
+
+---
+
+## 9. 本层验收清单
+
+- [ ] 类型检查：在仓库根目录运行 `pnpm typecheck`，确认 `packages/core/src/streaming/*.ts` 全部通过，无未使用变量或隐式类型错误。
+- [ ] 延迟埋点核心行为：运行 `pnpm vitest run streaming/latencyTracker`，用 mock 时间序列（首 token 300ms、后续每 50ms）断言 `diagnose()` 返回 `warning`，且 `ttft/tpot/e2e` 数值与预期误差小于 1ms。
+- [ ] 子 token 流式边界：分别以 5 个中文字符、200 字符代码块、空字符串三种输入调用 `SubTokenStreamer.feed()/finish()`，断言无输出丢失，且 `finish()` 后定时器计数归零（`vi.getTimerCount() === 0`）。
+- [ ] 重连补发：模拟客户端断线后携带 `last_id=42` 重连，断言 `getChunksAfter()` 只返回 id 大于 42 的 chunk；超过 `maxAgeMs` 后返回空数组且对应缓存被删除。
+- [ ] 反向代理回归：用 `curl -N --no-buffer http://localhost:3000/api/chat` 验证首行返回 `Content-Type: text/event-stream` 且响应头含 `X-Accel-Buffering: no`，chunk 到达间隔小于 1s。
+- [ ] 性能回归：以 100 并发持续压测 `/api/chat` 10 秒（`wrk -c100 -d10s`），断言 P95 TTFT 小于 1s、无 5xx 响应，心跳 comment 行在 25s 内至少推送一次。
 
 ---
 

@@ -1,0 +1,16 @@
+{
+  "name": "agent-builder-skill",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Verification gate for the agent-builder skill: checks that every documented code block parses and that the skill's own promises hold.",
+  "scripts": {
+    "check": "node tools/check-skill.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

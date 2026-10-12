@@ -3315,7 +3315,7 @@ groups:
 >
 > 2. **硬编码模型名称** — 代码里 `model: 'gpt-4o'` 散落在 15 个文件。三个月后 OpenAI 发布 GPT-5，你逐个文件改，漏改一处就是线上 bug。**检查方式**：模型 ID 只允许出现在一处：`/packages/core/src/model-router/model-registry.ts`。所有其他地方引用 `modelRegistry.getDefault('chat')` 或 `registry.get('cost-optimized')`。
 >
-> 3. **CI 中 LLM 调用没有超时保护** — GitHub Action 步骤里调 LLM 做 PR review，但没有 `timeout-minutes`，LLM API 偶尔卡住（504 timeout、网络抖动），导致 Action 一直 running，PR 合并按钮变灰。**检查方式**：所有包含 LLM 调用的 CI 步骤**必须**设 `timeout-minutes: 5`；调用代码**必须**有 `AbortController` + 3s 硬超时；超时后降级为 `console.warn('Agent review skipped')` 而非 throw 阻断流水线。
+> 🤖 3. **CI 中 LLM 调用没有超时保护** — GitHub Action 步骤里调 LLM 做 PR review，但没有 `timeout-minutes`，LLM API 偶尔卡住（504 timeout、网络抖动），导致 Action 一直 running，PR 合并按钮变灰。**检查方式**：所有包含 LLM 调用的 CI 步骤**必须**设 `timeout-minutes: 5`；调用代码**必须**有 `AbortController` + 3s 硬超时；超时后降级为 `console.warn('Agent review skipped')` 而非 throw 阻断流水线。
 >
 > 4. **Webhook Payload 明文传输 + 无签名验证** — 开发者觉得"内部服务不需要加密"，用 HTTP（不是 HTTPS）发 webhook payload 且不加 HMAC 签名。内网 ARP 劫持或恶意内部人员可以：(a) 伪造 webhook 请求触发生产操作；(b) 读取 payload 中的敏感数据。**检查方式**：生产环境 webhook 只允许 HTTPS（`url.startsWith('https://')`）；每次发送必须附加 `X-Webhook-Signature` header；接收方必须验证签名后才能处理。
 >
@@ -3328,6 +3328,19 @@ groups:
 > 8. **Webhook 重试没有去重（幂等性）** — Webhook 发送方网络抖动导致发送方认为失败并重试，接收方已经处理过了但没做幂等检查，导致"run.completed"对应的业务动作被重复执行两次（如给用户发了两次积分）。**检查方式**：每个 webhook 事件必须包含唯一的 `eventId`，接收方在处理前查 `processed_events:{eventId}` 去重表；Redis SETNX 实现 TTL 7 天的幂等锁。
 >
 > 9. **SSE 流式输出但没有 Ping keep-alive** — Nginx/云负载均衡器默认 60s 无数据就断开连接。Agent 推理到 65s 时连接已被切断，后端还在白白消耗 tokens。**检查方式**：SSE 连接每 15s 发一个 `:\n\n` 注释行作为 keep-alive；Nginx 配置 `proxy_read_timeout 600s`（Agent 场景专用）。
+
+---
+
+## 9. 本层验收清单
+
+> 完成本层后，用以下步骤验证产品化能力（限流/成本/Webhook/路由）符合预期（可在本地或 CI 执行）：
+
+- [ ] **类型检查**：运行 `npx tsc --noEmit`，确认第 24 层所有 TypeScript 示例无语法错误。
+- [ ] **门禁回归**：运行 `node tools/check-skill.mjs`，确认 `24-product-layer.md` 的所有代码块通过语法解析，且本文件包含至少 3 条 🤖 避坑标记与本节验收清单。
+- [ ] **限流与配额**：并发发送超过租户配额的用户请求，确认 `RateLimiter.tryConsume(userId)` 拦截并返回 429；超限后请求被自动拒绝且不消耗 LLM 额度。
+- [ ] **成本监控**：模拟租户日消耗超过预算 80%，确认 Prometheus 告警触发；租户硬预算超限后请求被拒绝，Playground 显示实时成本。
+- [ ] **Webhook 幂等与签名**：发送带 `X-Webhook-Signature` 的 payload，确认接收方验证 HMAC 签名后处理；重复 `eventId` 被 `processed_events` 去重表幂等丢弃。
+- [ ] **SSE 与模型路由**：启动 60s+ 的长响应，确认 15s 心跳 keep-alive 保持连接；修改 `model-registry.ts` 默认模型后，确认全站引用自动跟随新默认值。
 
 ---
 

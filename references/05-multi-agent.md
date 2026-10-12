@@ -2110,4 +2110,10 @@ MVP 阶段用内存向量库没问题，但生产环境数据量大时需要迁�
 
 ---
 
+## 20. 本层验收清单
 
+- [ ] 类型检查通过：在仓库根目录运行 `npx tsc --noEmit`，预期 0 个类型错误，`Supervisor`、`Worker`、编排器 Store 与后端 Orchestrator API 全部通过编译
+- [ ] 规范检查通过：运行 `node tools/check-skill.mjs`，预期本文件不再报 PROMISE 失败（至少 3 个 🤖 标记 + 存在验收清单章节）
+- [ ] 核心行为可运行：执行 `curl 'http://localhost:3000/api/orchestrator/run' -H 'Content-Type: application/json' -d '{"task":"调研并汇总","workers":["researcher","writer"]}'`，预期 Supervisor 正确分派、Worker 返回结构化结果，前端可视化面板能看到各子 Agent 的状态流转
+- [ ] 边界场景：让子 Agent 调用必然失败的工具并模拟网络超时，预期 Supervisor 在重试上限内标记该 Worker 失败并转派，主循环不因单个 Worker 崩溃而终止；高并发下无竞态导致的状态覆盖
+- [ ] 安全/性能回归：确认每次 upsert 前清理旧数据、embedding 模型固定、chunk 携带来源信息；对 10 万文档的 RAG 管道执行 100 次检索，预期 P95 延迟符合设定阈值，且无跨版本污染

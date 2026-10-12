@@ -690,6 +690,7 @@ async function getSharp() {
     sharpLib = (mod as any).default ?? mod;
   }
   return sharpLib;
+}
 
 /**
  * 屏幕录制 Agent —— 定时截图，对比变化，触发 Agent 决策
@@ -1407,3 +1408,10 @@ async speakStream(textStream: AsyncGenerator<string>): Promise<void> {
 | 01-foundation.md 的 SSE 协议 | 多模态内容的 SSE 消息类型（type: image/audio） |
 
 > 🤖 **工程逻辑**：多模态是"锦上添花"的能力层——Agent 去掉多模态仍然是完整的文本 Agent，但加上多模态才能覆盖更多使用场景。建议在完成 01-07 基础层后，根据用户需求选择性实现本文件的子模块（只做图片理解？还是全套？）。
+
+## 9. 本层验收清单
+
+- [ ] 类型检查：运行 `npx tsc --noEmit -p packages/core` 与 `npx tsc --noEmit -p apps/web`，确认 `router.ts`、`imagePipeline.ts`、`tts.ts`、`stt.ts`、`MediaChatInput.tsx` 通过类型检查。
+- [ ] 核心行为：运行 `npx vitest run packages/core/src/multimodality/__tests__/router.test.ts`，断言纯文字请求走 `defaultModel`、图片请求走视觉模型、无匹配模型时回退并设置 `lastFallbackNotice`。
+- [ ] 边界场景：用 4K 大图触发 `ImageProcessingPipeline.process`，断言输出尺寸 ≤ 1024×1024 且体积 < 100KB；用不支持的音频格式调用 STT，断言错误被上层捕获并 fallback。
+- [ ] 安全/性能回归：运行 `node tools/check-skill.mjs` 确认本文件无 PROMISE 失败；检查屏幕录制在发送前有隐私提示/敏感区域模糊，TTS 播放被新消息打断时无资源泄漏。

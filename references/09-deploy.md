@@ -1113,3 +1113,14 @@ git push origin main
 ---
 
 *本节点属于 Layer 3 工程化层。部署是 Agent 从开发到产品的最后一公里。实现时请记住：Docker Compose 适用于早期阶段（< 100 并发），当你的 QPS 超过单实例承载时再考虑 K8s。Electron 签名三个步骤缺一不可（codesign + notarize + staple）。密钥管理用 4 级优先级（环境变量 > Docker Secrets > AWS SM > Vault），绝不允许 .env 进 git。部署后通过 `/api/health` 验证全栈健康状态。*
+
+---
+
+## 09 本层验收清单
+
+- [ ] **类型检查**：在仓库根目录执行 `pnpm typecheck`，`apps/electron/**`、`server/src/**` 与部署脚本引用的类型均无错误。
+- [ ] **镜像构建**：执行 `pnpm build && docker build -f deploy/Dockerfile.web -t agent-web:test .`，启动后容器内 `ls node_modules` 不含 typescript/vite 等 devDependencies（`--production` 安装生效）。
+- [ ] **依赖顺序**：`docker compose up -d` 后执行 `docker compose ps`，postgres 先进入 healthy 后 web 才启动（`depends_on: condition: service_healthy` 生效）。
+- [ ] **SSE 代理**：经 Nginx 访问 `/api/chat`，`curl -N --no-buffer` 能实时收到分块 token；`proxy_buffering off` 与 `proxy_cache off` 在 `deploy/nginx.conf` 中生效。
+- [ ] **密钥安全**：`git grep -nE 'POSTGRES_PASSWORD|REDIS_PASSWORD|ALERT_WEBHOOK_URL'` 在非 `.env.example`/CI secrets 引用的文件中无明文；CI 日志中 `${{ secrets.* }}` 显示为 `***`。
+- [ ] **签名与公证**：macOS 产物 `codesign --verify --deep --strict` 通过且 `xcrun stapler validate` 返回 success；Windows 产物经 signtool 签名后 SmartScreen 不再告警（或 CI 走 Azure Code Signing 演练通过）。

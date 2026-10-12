@@ -1522,3 +1522,10 @@ export function VersionPanel({ docId }: { docId: string | null }) {
 | VectorStore 接口 | 继承 VectorStore 接口，扩展了按 filter 删除等操作 |
 
 > 🤖 **工程逻辑**：本文件是 03-memory-rag.md 中 RAG 部分的"进阶版"。如果只需要基础 PDF/文本 RAG，使用 03 中的简化版即可。如果用户上传多种格式文档且频繁编辑，则需要本文件的全部能力。
+
+## 9. 本层验收清单
+
+- [ ] 类型检查：运行 `npx tsc --noEmit -p packages/core`，确认 `parsers/*`、`delta-index.ts`、`versioning.ts` 通过类型检查。
+- [ ] 核心行为：上传 PDF/DOCX/MD 各一份并触发索引，运行 `npx vitest run packages/core/src/knowledge/__tests__/parse-registry.test.ts`，断言 Parser Registry 按 MIME type 分发正确且每类文档生成带页码/章节信息的 chunk。
+- [ ] 边界场景：编辑文档后再次索引，断言 Delta Indexing 只更新变化段落、删除的旧 chunk 不再被召回；回滚到旧版本后检索结果与历史版本一致。
+- [ ] 安全/性能回归：运行 `node tools/check-skill.mjs` 确认本文件无 PROMISE 失败；在 10 万 chunk 的知识库上验证 `listResources` 分页、`pruneVersions` 清理后召回延迟不劣化。

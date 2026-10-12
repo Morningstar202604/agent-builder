@@ -167,11 +167,11 @@ packages:
 
 ```bash
 # .env.example
-OPENAI_API_KEY=sk-xxx
+# 密钥（OPENAI_API_KEY / ANTHROPIC_API_KEY）由部署环境注入，示例不硬编码：
+#   Node 侧读取：process.env.OPENAI_API_KEY / process.env.ANTHROPIC_API_KEY
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-4o
 
-ANTHROPIC_API_KEY=sk-ant-xxx
 ANTHROPIC_MODEL=claude-sonnet-4-20250514
 
 SSE_TIMEOUT_MS=120000
@@ -1022,7 +1022,7 @@ module.exports = {
 
 ```typescript
 // LLM Stream 中途断网
-try { for await (const chunk of llm.stream(...)) { /* ... */ } }
+try { for await (const chunk of llm.stream(messages)) { /* ... */ } }
 catch (error) {
   if (error instanceof OpenAI.APIError) {
     if (error.status === 429) yield { type: 'error', error: '请求过于频繁' };

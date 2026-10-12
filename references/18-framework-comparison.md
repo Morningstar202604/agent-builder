@@ -72,6 +72,7 @@ import { StateGraph, END, START, Annotation, CheckpointSaver } from '@langchain/
 import z from 'zod';
 import { AbstractAgent } from '../agent/abstract-agent';
 import { MemoryManager } from '../memory/memory-manager';
+import type { LLMClient } from '../llm/types';
 
 /**
  * LangGraph 状态定义。
@@ -309,6 +310,7 @@ CrewAI 的三件套适合"并行分工"场景——让多个 Agent 同时处理�
 import { AbstractAgent } from '../agent/abstract-agent';
 import { ToolRegistry } from '../tools/tool-registry';
 import { MemoryManager } from '../memory/memory-manager';
+import type { LLMClient } from '../llm/types';
 
 /**
  * 🔑 CrewAI 是 Python-only 包，没有官方 TypeScript 支持。
@@ -533,7 +535,7 @@ export function wrapLLMForAutoGen(llmClient: {
   stream: (params: {
     messages: Array<{ role: string; content: string }>;
     tools?: Array<{ type: 'function'; function: { name: string; description: string; parameters: object } }>;
-  }) => AsyncGenerator<{ choices: [{ delta: { content?: string; tool_calls?: Array<{ function: { name: string; arguments: string } }] } }] }>;
+  }) => AsyncGenerator<{ choices: [{ delta: { content?: string; tool_calls?: Array<{ function: { name: string; arguments: string } }> } }] }>;
 }) {
   return {
     /**
@@ -836,6 +838,7 @@ import { createCodeReviewPair } from './autogen-bridge';
 import { AbstractAgent } from '../agent/abstract-agent';
 import { ToolRegistry } from '../tools/tool-registry';
 import { MemoryManager } from '../memory/memory-manager';
+import type { LLMClient } from '../llm/types';
 
 /**
  * 实战调度器：根据任务类型选择编排框架。
@@ -850,13 +853,14 @@ export class HybridOrchestrator {
   constructor(
     private toolRegistry: ToolRegistry,
     private memory: MemoryManager,
+    private llmClient: LLMClient,
     options: { checkpointer?: unknown } = {},
   ) {
     this.agents = new Map();
 
     // 默认通用 Agent（不绑 LangGraph，直接 SSE 服务用户）
     this.agents.set('general', new AbstractAgent({
-      llmClient: /* 项目已有 LLM 工厂 */,
+      llmClient: this.llmClient,
       toolRegistry,
       memoryManager: memory,
       systemPrompt: '你是一个通用助手。请以有帮助、安全的方式回答用户问题。',
@@ -864,7 +868,7 @@ export class HybridOrchestrator {
 
     // 🔑 每个角色创建独立的 AbstractAgent 实例，各自不同 system prompt
     const researchAgent = new AbstractAgent({
-      llmClient: /* LLM 工厂 */,
+      llmClient: this.llmClient,
       toolRegistry,
       memoryManager: memory,
       systemPrompt: '你是资深研究分析师。擅长多角度收集信息、交叉验证、形成有依据的结论。',
@@ -872,7 +876,7 @@ export class HybridOrchestrator {
     this.agents.set('researcher', researchAgent);
 
     const writerAgent = new AbstractAgent({
-      llmClient: /* LLM 工厂 */,
+      llmClient: this.llmClient,
       toolRegistry,
       memoryManager: memory,
       systemPrompt: '你是技术写作专家。擅长将复杂研究转化为结构清晰、易读的文档。',
@@ -880,7 +884,7 @@ export class HybridOrchestrator {
     this.agents.set('writer', writerAgent);
 
     const reviewerAgent = new AbstractAgent({
-      llmClient: /* LLM 工厂 */,
+      llmClient: this.llmClient,
       toolRegistry,
       memoryManager: memory,
       systemPrompt: '你是严格的质量审查员。检查事实准确性、逻辑完整性，发现问题直接指出。',
@@ -1132,5 +1136,16 @@ export function FrameworkPanel() {
 > 🤖 **AI 常见错误**：
 >
 > 3. **混用框架时 token 预算未分摊** — 当一个对话路由经过 LangGraph（research 阶段）和手写 AbstractAgent（general 阶段）时，两边的 `system prompt` 各自占 token，总 token 超出 context window 后 LLM 静默截断 system prompt 的工具描述层。**检查方式**：`AbstractAgent.run()` 必须在每次 LLM 调用前断言 `estimateTokens(systemPrompt) + estimateTokens(messages) < model.maxContext * 0.8`；混用模式下每个框架的 token 配额由 `TokenBudgetAllocator` 显式分配，禁止各框架自行估算。
+
+## 12. 本层验收清单
+
+- [ ] 类型检查：在仓库根目录运行 `pnpm typecheck`，确认 `packages/core/src/framework/*.ts` 桥接层全部通过；`StateGraph`/`Annotation.Root` 等框架类型只出现在对应适配器模块内。
+- [ ] 桥接核心行为：运行 `pnpm vitest run framework/bridge`，断言同一份 `AbstractAgent` 在 LangGraph、CrewAI、AutoGen 三种桥接下执行同一工具任务，结果一致且消息历史无重复。
+- [ ] 版本锁定：检查 `package.json` 中 `@langchain/langgraph` 锁在 `0.2.45`，运行 `pnpm why @langchain/langgraph` 确认无两个主版本并存；`pnpm.overrides` 已统一 LangChain 版本。
+- [ ] 边界场景：混用 LangGraph 与手写 Agent 时把总 token 推到 context 上限的 80%，断言 `TokenBudgetAllocator` 在第二次 LLM 调用前抛出显式预算错误，而不是静默截断 system prompt。
+- [ ] 安全回归：在 `ToolRegistry` 层注入跨框架 trace ID，断言 LangSmith/CrewAI log/AutoGen verbose 三类日志中的 `trace_id` 字段完全一致。
+- [ ] 性能回归：运行 `pnpm vitest run framework/perf`，断言每个桥接适配器的额外调用开销小于 5ms。
+
+---
 
 *本节点属于 Layer 4 生态集成层。核心原则：本项目（AgentCore）是主体，框架是工具。不要为了"用上某个框架"而用，只有在框架解决的问题确实是你的痛点时才引入。混用的代价是调试复杂度指数级增长，所以演进路径应该是逐步叠加、而非一步到位。框架版本兼容性必须在锁定文件（package.json）里做好管控。*

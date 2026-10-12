@@ -1057,3 +1057,13 @@ Agent.run(safeContent)          ← Step 1: 分隔符内走正常 agent 循环
 ---
 
 *本节点属于 Layer 3 工程化层。安全是纵深体系——以上四层互为补充，缺任何一层都会在高强度攻击下暴露缺口。实现时请先跑 Prompt 注入基准测试：确认 10 种已知注入手法的检测率 > 95%，正常用户消息的误判率 < 1%。*
+
+---
+
+## 07 本层验收清单
+
+- [ ] **类型检查**：在仓库根目录执行 `pnpm typecheck`，`server/src/security/**` 与 `apps/web/src/app/api/security/**` 无类型错误。
+- [ ] **注入检测核心行为**：运行 `pnpm vitest run server/src/security`（或 `pnpm exec tsx` 跑基准脚本），10 种已知注入手法（含大小写绕过、零宽字符、全角同形字）检测率 > 95%，正常用户消息误判率 < 1%。
+- [ ] **边界场景**：构造含随机 boundary 字符串的用户输入，验证 `promptInjectionGuard` 不抛异常且仍将输入包进 UUID 边界；空消息与超长消息（> 8k token）不导致中间件崩溃。
+- [ ] **安全回归**：`docker inspect <sandbox>` 确认沙箱容器 `NetworkMode` 为 `none` 且 AppArmor/seccomp profile 已加载；`isPathWithinWorkspace` 对 `../` 与绝对路径穿越均返回 false。
+- [ ] **权限控制**：未登录或非 admin 用户调用 `/api/security/events` 返回 401/403；篡改 `userId` 查询参数不能读到他人安全事件。

@@ -25,7 +25,6 @@ coverage/
 .vercel/
 .netlify/
 *.tsbuildinfo
-package-lock.json
 yarn.lock
 Thumbs.db
 .env.production

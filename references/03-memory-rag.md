@@ -1803,3 +1803,11 @@ export class RAGPipeline {
   }
 }
 ```
+
+## 本层验收清单
+
+- [ ] 类型检查通过：在仓库根目录运行 `npx tsc --noEmit`，预期 0 个类型错误，`MemoryManager`、`RAGPipeline` 及前端记忆搜索面板相关模块全部通过编译
+- [ ] 规范检查通过：运行 `node tools/check-skill.mjs`，预期本文件不再报 PROMISE 失败（至少 3 个 🤖 标记 + 存在验收清单章节）
+- [ ] 核心行为可运行：执行对应单测命令（如 `node --test tests/memory-rag.test.ts`），预期覆盖 `ingest` → `search` 全链路：写入 3 篇样例文档后用相关查询能召回到正确 chunk，且结果带 `sourceName` / `headingPath` 来源信息
+- [ ] 边界场景：分别测试空文档、嵌入服务返回 5xx/超时、向量库不可用三种情况，预期 `RAGPipeline.ingest` 抛出可读错误并回滚已写入 chunk，进程不崩溃；断网时 `search` 返回明确错误而非静默空结果
+- [ ] 安全/性能回归：文档规模为 10 万 chunk 时执行 100 次混合检索（向量 + BM25 + RRF），预期 P95 延迟符合设定阈值（如 <500ms），且检索日志完整记录每次查询的来源与耗时

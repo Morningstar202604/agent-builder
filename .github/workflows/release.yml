@@ -36,19 +36,19 @@ jobs:
         run: |
           set -euo pipefail
           if [ -n "$INPUT_TAG" ]; then
-            ref="$INPUT_TAG"
+            tag="$INPUT_TAG"
           elif [ "$GITHUB_REF_TYPE" = tag ]; then
-            ref="$GITHUB_REF_NAME"
+            tag="$GITHUB_REF_NAME"
           else
-            ref="$(git describe --tags --abbrev=0 --match 'v*.*.*')"
+            tag="$(git describe --tags --abbrev=0 --match 'v*.*.*')"
           fi
-          ref="${ref#v}"
-          git rev-parse --verify --quiet "${ref}^{commit}" >/dev/null || {
-            echo "::error::tag '${ref}' does not resolve to a commit"
+          tag="${tag#v}"
+          git rev-parse --verify --quiet "v${tag}^{commit}" >/dev/null || {
+            echo "::error::tag 'v${tag}' does not resolve to a commit"
             exit 1
           }
-          echo "resolved=v$ref" >> "$GITHUB_OUTPUT"
-          echo "resolved tag: v$ref"
+          echo "resolved=v$tag" >> "$GITHUB_OUTPUT"
+          echo "resolved tag: v$tag"
 
       - name: Check tag matches VERSION
         if: github.ref_type == 'tag'

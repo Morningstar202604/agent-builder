@@ -21,7 +21,7 @@ const ALLOWED_PREFIXES = [
 ];
 // Rules the skill states about itself. Numbers here are the current measured baseline;
 // CI fails only on regressions, so fixing a file lets you ratchet the number down.
-const BASELINE = { 'as-any': 51, 'explicit-any': 177, 'console-log': 13 };
+const BASELINE = { 'as-any': 0, 'explicit-any': 0, 'console-log': 0 };
 
 const fail = [];
 const warn = [];

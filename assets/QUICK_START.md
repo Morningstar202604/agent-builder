@@ -34,7 +34,7 @@ pnpm install
 ```
 
 **关键检查**：
-- `node >= 18.17`（Next.js 15 + Drizzle ORM 要求）
+- `node >= 20.0`（Next.js 15 + Drizzle ORM 要求）
 - `pnpm >= 9.0.0`（workspace 协议支持）
 - 安装完成后 `node_modules/.pnpm` 应存在且非空
 
@@ -197,7 +197,7 @@ pnpm dev
 
 | 组件 | 最低版本 | 推荐版本 | 说明 |
 |------|---------|---------|------|
-| Node.js | >= 18.17 | 20.x LTS | Next.js 15 + Drizzle ORM 要求 |
+| Node.js | >= 20.0 | 22.x LTS | Next.js 15 + Drizzle ORM 要求 |
 | pnpm | >= 9.0.0 | 9.x | workspace 协议 + lockfile v6 |
 | Docker | >= 24.0 | 25.x | Compose v2 格式 |
 | Docker Compose | >= 2.20 | 2.24+ | healthcheck + depends_on 条件 |

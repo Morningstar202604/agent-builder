@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - 修复 8 处代码块语法错误（伪代码 `...`、对象字面量括号错配、类型括号顺序、缺失闭括号、`lines.push` 缺右括号等）。
+- **全面去手写化**：重写全部 24 篇 references，把自研实现替换为成熟方案（Vercel AI SDK、LangGraph、LlamaIndex/Haystack、E2B/Daytona、OpenAI Agents SDK、Langfuse/promptfoo、CASL、LiteLLM、@modelcontextprotocol/sdk 等）；仅保留业务差异层 `[CUSTOM]`。
+- **新增契约与映射**：新增 `references/00-types.md` 跨层类型契约（统一 `LanguageModel`/`UIMessage`/`AgentEvent`）与 `docs/REUSE_MATRIX.md` 逐层"手写→成熟替代"映射表；SKILL.md 的 LLM 统一层改为 Vercel AI SDK/LiteLLM。
+- **统一版本与治理**：Node 版本统一为 >=20（QUICK_START/SKILL.md/00-types）；修复官网 footer 年份、SECURITY 占位邮箱。
+- **代码质量归零**：references 中 `as any` / `: any` / `console.log(` 计数从 51/177/13 降到 0，验证门禁基线同步收紧。
 - 检查器兼容片段代码块（class/namespace/async generator 包裹后再解析）；避坑标记检测改为统计 `🤖`（与 references 实际格式一致）；扩展允许的 monorepo 路径前缀。
 - 对齐 SKILL.md 声明的 monorepo 布局与 references 实际路径（新增 `server/`、`packages/mcp-servers`、`packages/web`）。
 - `.env.example` 密钥示例改为环境变量注入说明，避免硬编码占位密钥。

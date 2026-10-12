@@ -12,8 +12,8 @@
 
  如发现安全相关问题，请通过以下任一方式**私下**提交，切勿使用公开 Issue：
 
-- **安全联系邮箱**：<REDACTED>（安全团队 24h 内确认收件）
-- **GitHub Private Vulnerability Reporting**：直接在 GitHub 仓库 → "Security" → "Advisories" → "Report a vulnerability"
+- **GitHub Private Vulnerability Reporting**：直接在 GitHub 仓库 → "Security" → "Advisories" → "Report a vulnerability"（首选，团队 24h 内确认收件）
+- **镜像平台**：GitCode / Gitee 的 Issue 中标注 `[SECURITY]` 前缀并说明不公开披露（次选）
 
 ### 本项目适合披露的安全问题范围
 

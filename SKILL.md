@@ -405,8 +405,10 @@ If the user already has a project, map these paths to their structure and adapt 
 
 ## 不重复造轮子铁律（所有 references 通用） / No Wheel-Reinvention Iron Rule
 
+> **逐层映射表**：见 [docs/REUSE_MATRIX.md](docs/REUSE_MATRIX.md) —— 每一层"手写实现 → 成熟替代"都有明确对应，任何 reference 出现手写基础设施代码都应按下表替换。
+
 1. **优先选用以下成熟生态**：
-   - LLM SDK：OpenAI SDK (兼容 DeepSeek/Ollama) / Anthropic SDK / Google GenAI SDK
+   - LLM 统一层：**Vercel AI SDK**（`ai`，统一流式/工具调用/多 Provider）或 **LiteLLM**（代理/路由）；OpenAI/Anthropic 官方 SDK 仅作为底层依赖
    - LLM 编排：LangGraph（复杂状态机）/ CrewAI（多 Agent 角色）/ AutoGen（对话式）
    - 向量DB：Qdrant / Milvus / Chroma（自用）/ Pinecone（SaaS）
    - 结构化校验：Zod / TypeBox / JSON Schema + Ajv

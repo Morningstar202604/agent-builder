@@ -13,7 +13,7 @@
 
 ## 这是什么 / What This Is
 
-一套帮助开发者和 AI Agent **从零构建企业级 AI Agent** 的完整参考指南。覆盖从 monorepo 脚手架到 Playground UI 的全栈 Agent 开发链路 —— 每个节点含完整 TypeScript 实现、工程决策理由、AI 避坑注释，经两轮以上交叉审计。
+一套帮助开发者和 AI Agent **从零构建企业级 AI Agent** 的完整参考指南。覆盖从 monorepo 脚手架到 Playground UI 的全栈 Agent 开发链路 —— **不重复造轮子**：每个节点给出"手写实现 → 成熟方案"的映射与集成代码（Vercel AI SDK、LangGraph、LlamaIndex、E2B、OpenAI Agents SDK、Langfuse、LiteLLM 等），并附工程决策理由、AI 避坑注释，经两轮以上交叉审计。
 
 A complete reference for developers and AI Agents to **build enterprise-grade AI Agents from scratch**. Covers the full-stack pipeline from monorepo scaffolding to Playground UI — every node has production TypeScript code, engineering rationale, and AI-pitfall annotations, cross-audited multiple times.
 

@@ -1,20 +1,28 @@
 # 18 — 框架集成与对比 · LangGraph · CrewAI · AutoGen · CAMEL · MetaGPT
 
-> 目标：五个主流 Agent 框架各有长短。不要"为了用框架而用框架"，而是根据场景选择最合适的，并以本项目 AbstractAgent 为核心实现"本项目为主、框架为辅"的混用架构。
+> 目标：五个主流 Agent 框架各有长短。不要"为了用框架而用框架"，而是根据场景选择最合适的。本文件是**选型文档**，不是实现文档——框架的成熟用法直接用官方 API，不写桥接层。
+
+> **⚠️ 本层铁律：框架是工具，不是要改造的对象。**
+> - 选 LangGraph → 直接用官方 `createReactAgent` / `StateGraph`，不把自家 Agent 包装成节点
+> - 选 CrewAI / AutoGen / CAMEL / MetaGPT → 直接用官方 Python API，不写 TypeScript 桥接
+> - 本项目的主体是 01 的 `streamText` + `tools`，框架只解决"多 Agent 编排 / 持久化 / 角色协作"这类具体痛点
+>
+> 本文件**无手写实现**，只保留对比矩阵、官方用法示例与选型约束。
 
 ---
 
 ## 目录
 
 - [1. 框架全景对比 Matrix](#1-框架全景对比-matrix)
-- [2. LangGraph 集成指南](#2-langgraph-集成指南)
-- [3. CrewAI 集成指南](#3-crewai-集成指南)
-- [4. AutoGen 集成指南](#4-autogen-集成指南)
-- [5. 实战混用策略](#5-实战混用策略)
-- [6. 切换成本评估矩阵](#6-切换成本评估矩阵)
-- [7. 前端：Framework 适配器面板](#7-前端framework-适配器面板)
-- [8. 避坑汇总](#8-避坑汇总)
-- [9. AI 避坑追加（AST 可检）](#9-ai-避坑追加ast-可检)
+- [2. LangGraph](#2-langgraph)
+- [3. CrewAI](#3-crewai)
+- [4. AutoGen](#4-autogen)
+- [5. CAMEL](#5-camel)
+- [6. MetaGPT](#6-metagpt)
+- [7. 实战混用策略](#7-实战混用策略)
+- [8. 切换成本评估矩阵](#8-切换成本评估矩阵)
+- [9. 避坑汇总](#9-避坑汇总)
+- [10. 本层验收清单](#10-本层验收清单)
 
 ---
 
@@ -24,12 +32,12 @@
 
 | 维度 | LangGraph | CrewAI | AutoGen | CAMEL | MetaGPT |
 |------|-----------|--------|---------|-------|---------|
-| **架构哲学** | 图编排——一切皆节点+边，状态机驱动 | 角色协作——Crew/Agent/Task 三件套 | 对话代理——ConversableAgent 消息传递 | 角色扮演——两 Agent 对话涌现智能 | 流水线——SOP 驱动多角色串行 |
-| **状态管理** | 显式 StateGraph，类型安全，可持久化 checkpoint | 隐式状态，由框架内部管理，不可细粒度干预 | 基于消息列表，无结构化状态 | 对话历史即状态，无外部存储 | 显式 Message Pool，按 SOP 流转 |
-| **调试体验** | LangSmith trace 可视化极强，每节点耗时/输入输出可查 | 日志丰富但无可视化工具，需自己做 trace | verbose 模式输出极多，无结构化 UI | 对话日志可读性好，但无结构化调试 | 中间产物文件化，可手动追溯 |
-| **社区** | 最大、最活跃，LangChain 生态直接赋能 | 快速增长，企业用户多，但底层控制力弱 | 微软背书，学术圈流行，生产案例偏少 | 学术导向，社区小但专注 | 中文社区强，国际偏弱 |
-| **文档质量** | 示例多但有版本碎片化问题（0.2 vs 0.3 API 不兼容） | 上手快，深度不足，高级用法需读源码 | 文档分散在论文和代码间，新手门槛高 | 文档薄，论文比文档清楚 | 中文文档好，英文文档滞后 |
-| **适用场景** | 复杂工作流、状态机、需要持久化/恢复的 Agent | 快速原型、角色化团队协作 | 代码生成验证、多 Agent 对话实验 | 对话模拟、数据生成、研究 | 软件工程 SOP 自动化 |
+| **架构哲学** | 图编排——节点+边，状态机驱动 | 角色协作——Crew/Agent/Task 三件套 | 对话代理——ConversableAgent 消息传递 | 角色扮演——Agent 对话涌现智能 | 流水线——SOP 驱动多角色串行 |
+| **状态管理** | 显式 StateGraph，类型安全，可持久化 checkpoint | 隐式状态，框架内部管理 | 基于消息列表，无结构化状态 | 对话历史即状态 | 显式 Message Pool，按 SOP 流转 |
+| **调试体验** | LangSmith trace 可视化强 | 日志丰富但无可视化工具 | verbose 模式输出多 | 对话日志可读性好 | 中间产物文件化 |
+| **社区** | 最大、最活跃，LangChain 生态 | 增长快，企业用户多 | 微软背书，学术圈流行 | 学术导向，社区小但专注 | 中文社区强 |
+| **文档质量** | 示例多但有版本碎片化 | 上手快，深度不足 | 文档分散在论文与代码间 | 文档薄 | 中文文档好，英文滞后 |
+| **适用场景** | 复杂工作流、持久化/恢复 | 快速原型、角色化团队协作 | 代码生成验证、多 Agent 实验 | 对话模拟、数据生成、研究 | 软件工程 SOP 自动化 |
 
 ### 1.2 选型决策树
 
@@ -40,931 +48,154 @@
 ├── 代码生成+验证循环（测试驱动） → AutoGen
 ├── 对话数据生成/角色扮演研究 → CAMEL
 ├── 软件工程流程自动化（需求→代码→测试） → MetaGPT
-└── 以上都包含，且需要统一架构 → 本项目 AbstractAgent 为主 + 框架桥接
+└── 以上都包含，且需要统一架构 → 本项目 streamText + tools 为主，框架按需引入
 ```
 
 ### 1.3 核心抽象映射
 
-| 本项目 | LangGraph | CrewAI | AutoGen | CAMEL | MetaGPT |
+| 本项目（01） | LangGraph | CrewAI | AutoGen | CAMEL | MetaGPT |
 |--------|-----------|--------|---------|-------|---------|
-| AbstractAgent | Graph Node | Agent | ConversableAgent | RolePlaying | Role |
-| ToolRegistry | Node 内工具调用 | Task.tools | function_map | 工具作为 Role 能力 | Action |
-| MemoryManager | Checkpoint / Store | Memory (short/long) | chat_messages_history | chat_history | MessagePool |
-| AgentTool | Tool Node | Tool | FunctionTool | 工具描述 | Action |
+| `streamText` Agent | `createReactAgent` / Graph Node | Agent | ConversableAgent | ChatAgent | Role |
+| `tool()` | LangChain Tool | Task.tools | function_map | 工具作为 Agent 能力 | Action |
+| SessionStore / Memory | Checkpoint / Store | Memory (short/long) | chat_messages_history | 对话历史 | MessagePool |
 | AgentEvent | Stream Event | 无直接对应 | 消息事件 | 消息事件 | Message |
 
 ---
 
-## 2. LangGraph 集成指南
+## 2. LangGraph
 
-### 2.1 核心思路：把 AbstractAgent 包装成 LangGraph Node
-
-你不应该因为上了 LangGraph 就重写所有 Agent 逻辑。正确做法是把 `AbstractAgent` 作为 LangGraph 图中的一个"超级节点"，让 LangGraph 负责编排、持久化和恢复，让 AbstractAgent 负责推理、工具调用和记忆管理。
-
-🔗 **工程逻辑**：LangGraph 的核心价值是"checkpoint"——每个节点执行后可以持久化状态，断线恢复时从断点续跑。把这个能力叠加到你的 AbstractAgent 上，就实现了第 21 章（fault-recovery.md）要做的状态快照——而且是复用成熟生态，不是自己造轮子。
-
-### 2.2 桥接实现
+**成熟用法**：直接使用官方 `createReactAgent` 构建 ReAct Agent，或 `StateGraph` + `Annotation` 自定义编排。不要把自家 Agent 逻辑"包装成图节点"——框架的价值是 checkpoint 与循环控制，推理仍由模型完成。
 
 ```typescript
-// packages/core/src/frameworks/langgraph-bridge.ts
+// 官方 LangGraph 用法：createReactAgent 一行构建 ReAct Agent
+import { createReactAgent } from '@langchain/langgraph/prebuilt';
+import { ChatOpenAI } from '@langchain/openai';
+import { DynamicStructuredTool } from '@langchain/core/tools';
+import { z } from 'zod';
 
-import { StateGraph, END, START, Annotation, CheckpointSaver } from '@langchain/langgraph';
-import z from 'zod';
-import { AbstractAgent } from '../agent/abstract-agent';
-import { MemoryManager } from '../memory/memory-manager';
-import type { LLMClient } from '../llm/types';
-
-/**
- * LangGraph 状态定义。
- * messages 字段与 LangChain Message 格式兼容，
- * 这让 LangSmith 的 trace 展示直接可用。
- *
- * 🔑 reducer 使用去重合并：防止节点重试或循环执行时消息重复累积。
- * 判断标准：role + content 相同视为同一条消息。
- */
-const AgentState = Annotation.Root({
-  messages: Annotation<Array<{ role: 'user' | 'assistant' | 'tool'; content: string }>>({
-    default: () => [],
-    reducer: (left, right) => {
-      // 去重合并：基于 role + content 组合判断是否重复
-      const seen = new Set(left.map(m => `${m.role}:${m.content}`));
-      const newOnes = right.filter(m => !seen.has(`${m.role}:${m.content}`));
-      return [...left, ...newOnes];
-    },
-  }),
-  currentInput: Annotation<string>({ default: () => '' }),
-  toolResults: Annotation<Array<{ tool: string; result: string }>>({
-    default: () => [],
-    reducer: (left, right) => {
-      // toolResults 也可能重试时重复 — 按 tool+result 去重
-      const seen = new Set(left.map(t => `${t.tool}:${t.result}`));
-      return [...left, ...right.filter(t => !seen.has(`${t.tool}:${t.result}`))];
-    },
-  }),
-  metadata: Annotation<Record<string, unknown>>({
-    default: () => ({}),
-    reducer: (left, right) => ({ ...left, ...right }),
-  }),
+const getWeather = new DynamicStructuredTool({
+  name: 'get_weather',
+  description: '查询指定城市的天气',
+  schema: z.object({ city: z.string() }),
+  func: async ({ city }) => JSON.stringify({ city, temp: 24 }),
 });
 
-type AgentStateType = typeof AgentState.State;
-
-/**
- * 将 AbstractAgent 包装为 LangGraph 节点。
- *
- * 这个桥接的关键约定：
- * 1. AbstractAgent 的工具调用不会直接修改外部状态
- * 2. 每次调用返回 LangGraph 兼容的状态更新
- * 3. 抽象层泄漏时（如 LangGraph 的 Send API），提供 fallback
- */
-export function createAgentNode(
-  agent: AbstractAgent,
-  options: {
-    name?: string;
-    maxToolCalls?: number;
-  } = {},
-) {
-  const { name = 'agent_node', maxToolCalls = 10 } = options;
-
-  return async function agentNode(
-    state: AgentStateType,
-    config?: { configurable?: { thread_id?: string } },
-  ): Promise<Partial<AgentStateType>> {
-    const userMessage = state.currentInput;
-    if (!userMessage && state.messages.length === 0) {
-      return {}; // 空输入不处理
-    }
-
-    const inputs = userMessage || state.messages[state.messages.length - 1]?.content || '';
-
-    // 调用 AbstractAgent，收集所有 Assitant 产物
-    const assistantContent: string[] = [];
-    const toolResults: Array<{ tool: string; result: string }> = [];
-    let callCount = 0;
-
-    const generator = agent.run(inputs, {
-      // 复用 LangGraph 的 thread_id 作为 session_id
-      sessionId: config?.configurable?.thread_id,
-    });
-
-    for await (const event of generator) {
-      try {
-        if (event.type === 'assistant_message') {
-          assistantContent.push(event.content);
-        } else if (event.type === 'tool_result') {
-          toolResults.push({ tool: event.toolName, result: event.result });
-          callCount++;
-          if (callCount >= maxToolCalls) {
-            assistantContent.push('\n[达到工具调用上限，中断执行]');
-            break;
-          }
-        }
-      } catch (error) {
-        assistantContent.push(`\n[Agent execution error: ${(error as Error).message}]`);
-        break;
-      }
-    }
-
-    return {
-      messages: [
-        { role: 'assistant', content: assistantContent.join('') },
-      ],
-      toolResults,
-    };
-  };
-}
-
-/**
- * 构建完整的 Agent 图。
- *
- * 这是一个最简单的单节点图。实际场景下可扩展为：
- * START → router → [research_node, coding_node, ...] → END
- * 每个节点内部都是独立的 AbstractAgent 实例。
- */
-export function buildAgentGraph(
-  agent: AbstractAgent,
-  checkpointer?: CheckpointSaver,
-) {
-  const graph = new StateGraph(AgentState)
-    .addNode('main_agent', createAgentNode(agent))
-    .addEdge(START, 'main_agent')
-    .addEdge('main_agent', END);
-
-  // checkpointer 即为 LangGraph 的持久化引擎
-  // 传入后，每个节点执行结束自动做 checkpoint
-  return graph.compile({ checkpointer });
-}
-
-/**
- * 辅助函数：以流式方式运行图。
- * 返回 AsyncGenerator，供 SSE API 消费。
- */
-export async function* streamAgentGraph(
-  graph: ReturnType<typeof buildAgentGraph>,
-  input: string,
-  threadId: string,
-): AsyncGenerator<{ type: string; data: unknown }> {
-  const stream = graph.stream(
-    { currentInput: input },
-    { configurable: { thread_id: threadId } },
-  );
-
-  for await (const chunk of stream) {
-    try {
-      // LangGraph 的 chunk 格式是 { nodeName: state } 的 map
-      for (const [nodeName, nodeState] of Object.entries(chunk)) {
-        yield {
-          type: 'node_update',
-          data: { node: nodeName, state: nodeState },
-        };
-      }
-    } catch (error) {
-      yield {
-        type: 'error',
-        data: { message: (error as Error).message },
-      };
-    }
-  }
-}
+const agent = createReactAgent({
+  llm: new ChatOpenAI({ model: 'gpt-4o' }),
+  tools: [getWeather],
+});
 ```
 
-### 2.3 与 LangGraph Checkpoint 配合
+🔗 **工程逻辑**：LangGraph 的核心价值是 **checkpoint**——每个节点执行后持久化状态，断线恢复时从断点续跑，这正是 21（fault-recovery）需要的。用官方 API 获得这个能力，不要自己实现状态机。
 
-```typescript
-// packages/core/src/frameworks/langgraph-checkpoint.ts
-
-import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
-import { Pool } from 'pg';
-
-/**
- * LangGraph 的 Checkpoint 持久化到 Postgres。
- * 🔑 @vercel/postgres（Neon serverless driver）不暴露 createPool，
- * 正确做法：用 `pg` 包的 Pool 构造标准 Postgres 连接池。
- */
-export async function createPostgresCheckpointer(connectionString: string) {
-  const pool = new Pool({ connectionString, max: 10 });
-
-  const checkpointer = new PostgresSaver(pool as any);
-
-  // checkpointer.setup() 创建 checkpoint 相关的表
-  // 幂等操作——重复调用不会报错
-  await checkpointer.setup();
-
-  return checkpointer;
-}
-```
-
-### 2.4 路由节点设计
-
-```typescript
-// packages/core/src/frameworks/langgraph-router.ts
-
-/**
- * LangGraph 路由：根据用户输入选择执行哪个专家 Agent。
- *
- * 这是"本项目为主、框架为辅"的核心——
- * 用 LangGraph 的 router 决定走哪条路径，
- * 路径上的每个节点是本项目的 AbstractAgent。
- */
-
-export function createRouterNode(
-  routes: Array<{
-    name: string;
-    description: string;
-    keywords: string[];
-  }>,
-) {
-  return async function routerNode(state: { currentInput: string }) {
-    const input = state.currentInput.toLowerCase();
-
-    for (const route of routes) {
-      if (route.keywords.some((kw) => input.includes(kw))) {
-        return { selectedRoute: route.name };
-      }
-    }
-
-    return { selectedRoute: 'general' };
-  };
-}
-```
-
-🤖 **AI 常见错误**：
-1. **把整个 AbstractAgent 重写成 LangChain 的 AgentExecutor**：桥梁工程应该是"包装"不是"替换"。你已经花了几百行构建了 MemoryManager、ToolRegistry、Skills system——这些不该因为换框架而丢。
-2. **忘记 LangGraph 的 reducer 语义**：`Annotation` 的 `reducer` 决定了多次节点的更新如何累加。默认的 "replace" 语义会让前一个节点的消息被覆盖，必须用 `concat` 或自定义 reducer。
+🤖 **AI 常见错误**：把整个自研 Agent 重写成 LangChain 的 `AgentExecutor`。正确的做法是保持 01 的 `streamText` 作为单 Agent 推理主体，只在"确实需要图编排 + 持久化"的多步骤工作流里引入 `createReactAgent`。
 
 ---
 
-## 3. CrewAI 集成指南
+## 3. CrewAI
 
-### 3.1 核心思路：Crew/Agent/Task 映射
+**成熟用法**：CrewAI 是 Python 优先的框架，用官方 `crewai` 包直接定义 Agent/Task/Crew。TS 项目不需要桥接——把 CrewAI 作为独立服务（或直接用 Python 子进程）运行，通过 HTTP 收结果即可，桥接层只有"传配置、收结果"两件事。
 
-CrewAI 的三件套适合"并行分工"场景——让多个 Agent 同时处理一个任务的不同方面。但 CrewAI 缺乏对 Memory 和 Tool 的精细控制，所以正确用法是把 CrewAI 当作"协调层"，每个 Agent 内部调本项目的 `AbstractAgent`。
+```python
+# CrewAI 官方用法（Python）：Crew + Agent + Task
+from crewai import Agent, Crew, Process, Task
 
-🔗 **工程逻辑**：CrewAI 的 `Process.parallel` 可以在一个 Crew 内部并行执行多个 Agent——这在做"多角度分析"时很有用（如同时进行安全审计、性能审计、代码风格审计）。但 CrewAI 的记忆系统远不如你已有的 MemoryManager，所以 Agent 的记忆管理应走你自己的体系。
+researcher = Agent(
+    role="资深研究员",
+    goal="多角度收集信息并交叉验证",
+    backstory="你擅长事实核查。",
+    tools=[],  # 官方工具见 crewai-tools 文档
+)
 
-### 3.2 桥接实现
+task = Task(
+    description="调研主题并输出带来源的关键发现",
+    expected_output="要点列表",
+    agent=researcher,
+)
 
-```typescript
-// packages/core/src/frameworks/crewai-bridge.ts
-
-import { AbstractAgent } from '../agent/abstract-agent';
-import { ToolRegistry } from '../tools/tool-registry';
-import { MemoryManager } from '../memory/memory-manager';
-import type { LLMClient } from '../llm/types';
-
-/**
- * 🔑 CrewAI 是 Python-only 包，没有官方 TypeScript 支持。
- * 正确做法：TS 侧通过 HTTP 调用 Python CrewAI 服务，不直接 import。
- *
- * Python 端需要暴露一个 /api/crewai/run 端点，
- * 接收 {crew_config: {...}, topic: "..."} 返回流式结果。
- */
-
-interface CrewAIAgentConfig {
-  role: string;
-  goal: string;
-  backstory: string;
-  tools: string[];
-}
-
-interface CrewAIBridgeConfig {
-  agents: CrewAIAgentConfig[];
-  process: 'sequential' | 'hierarchical';
-  topic: string;
-}
-
-/**
- * 通过 HTTP Python CrewAI 服务交互的客户端。
- * CrewAI 的编排逻辑（Process.sequential / Process.hierarchical）由 Python 端实现，
- * TS 侧只负责传配置、收结果，保持"本项目为主"的原则。
- */
-class CrewAIHttpClient {
-  constructor(private baseUrl: string) {}
-
-  async *runCrew(config: CrewAIBridgeConfig): AsyncGenerator<string> {
-    const res = await fetch(`${this.baseUrl}/api/crewai/run`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(config),
-    });
-
-    if (!res.ok) throw new Error(`CrewAI Python service error: ${res.status}`);
-
-    // Python 端以 NDJSON 流式返回每行一个 JSON {phase, content}
-    const reader = res.body?.getReader();
-    if (!reader) throw new Error('No response body');
-
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        const parsed = JSON.parse(line);
-        yield `[${parsed.phase}] ${parsed.content}`;
-      }
-    }
-  }
-}
-
-/**
- * 将本项目的工具转换为 CrewAI Agent 可消费的 tool 描述。
- * 这些描述被传给 Python 端，由 Python 端创建实际的 CrewAI Agent。
- */
-function buildCrewToolDescriptions(toolRegistry: ToolRegistry, toolNames: string[]) {
-  return toolNames.map((name) => {
-    const meta = toolRegistry.getMeta(name);
-    return {
-      name,
-      description: meta?.description ?? `Execute ${name}`,
-    };
-  });
-}
-
-/**
- * 构建 CrewAI Agent 配置——通过 HTTP 传给 Python 服务，
- * 不在 TS 侧创建 CrewAI 对象。
- */
-export function buildCrewAgentConfig(
-  abstractAgent: AbstractAgent,
-  toolRegistry: ToolRegistry,
-  options: {
-    role: string;
-    goal: string;
-    backstory: string;
-    tools: string[];
-  },
-) {
-  return {
-    role: options.role,
-    goal: options.goal,
-    backstory: options.backstory,
-    tools: buildCrewToolDescriptions(toolRegistry, options.tools),
-    // 自定义执行器：绕过 CrewAI 的 LLM 调用，直接走 AbstractAgent
-    // Python 端如果也实现了这个 HTTP fallback 接口，可以两路互补
-    executeTask: async (taskDescription: string) => {
-      const results: string[] = [];
-      const generator = abstractAgent.run(taskDescription);
-      for await (const event of generator) {
-        if (event.type === 'assistant_message') {
-          results.push(event.content);
-        }
-      }
-      return results.join('\n');
-    },
-  };
-}
-
-/**
- * 推荐模式：CrewAI Python 服务负责任务分配和编排，
- * 执行走 AbstractAgent（本项目）。
- */
-export function createResearchCrew(config: {
-  researcher: AbstractAgent;
-  writer: AbstractAgent;
-  reviewer: AbstractAgent;
-  toolRegistry: ToolRegistry;
-  memory: MemoryManager;
-  /** Python CrewAI 服务的 URL */
-  pythonServiceUrl?: string;
-}): { run: (topic: string) => AsyncGenerator<string> } {
-  // 如果有 Python CrewAI 服务，用 HTTP 调用；否则 fallback 到本地 AbstractAgent
-  const httpClient = config.pythonServiceUrl
-    ? new CrewAIHttpClient(config.pythonServiceUrl)
-    : null;
-
-  const researcherConfig = buildCrewAgentConfig(config.researcher, config.toolRegistry, {
-    role: 'Senior Research Analyst',
-    goal: 'Conduct thorough research and fact-finding on the given topic',
-    backstory: 'You are an experienced research analyst with expertise in finding accurate information.',
-    tools: ['web_search', 'web_fetch', 'read_file'],
-  });
-
-  const writerConfig = buildCrewAgentConfig(config.writer, config.toolRegistry, {
-    role: 'Technical Writer',
-    goal: 'Synthesize research findings into clear, structured documents',
-    backstory: 'You are a technical writer who transforms complex research into accessible content.',
-    tools: ['write_file', 'edit_file'],
-  });
-
-  return {
-    async *run(topic: string) {
-      yield `Starting research crew for: ${topic}`;
-
-      if (httpClient) {
-        // 🔑 CrewAI 编排走 Python 服务（HTTP）
-        yield* httpClient.runCrew({
-          agents: [researcherConfig, writerConfig],
-          process: 'sequential',
-          topic,
-        });
-        return;
-      }
-
-      // Fallback：没有 Python 服务时，本地顺序执行
-      const researchTask = `Research the following topic and provide key findings, sources, and analysis.\n\nTopic: ${topic}`;
-      const researchResult = await researcherConfig.executeTask(researchTask);
-      yield `Research complete. Findings: ${researchResult.slice(0, 200)}...`;
-
-      const writingTask = `Based on the following research, write a comprehensive summary.\n\nResearch:\n${researchResult}`;
-      const writeResult = await writerConfig.executeTask(writingTask);
-      yield `Draft complete.`;
-
-      yield writeResult;
-    },
-  };
-}
+crew = Crew(agents=[researcher], tasks=[task], process=Process.sequential)
+result = crew.kickoff(inputs={"topic": "AI agents 在 2026 年的实践"})
 ```
 
-### 3.3 Process 模式选择
+🔗 **工程逻辑**：CrewAI 的记忆系统粒度较粗，如果项目已经依赖 03（Memory & RAG）的 `MemoryManager`，就在 CrewAI Agent 上设置 `memory=False`，记忆统一走自己的体系，避免双记忆冲突。
 
-```
-你的场景用哪种 Process？
-├── 线性流程（A → B → C）→ Process.sequential
-│   适用于：Research → Write → Review 这种依赖关系
-├── 层级流程（Manager 分配 → 员工执行）→ Process.hierarchical
-│   适用于：动态任务分配，但 Manager Agent 的决策质量依赖于 LLM 推理
-└── 并行执行（A + B + C 同时 → 汇总）
-    ⚠️ CrewAI 目前不原生支持，需要自己实现（见 createResearchCrew 示例）
-```
+🤖 **AI 常见错误**：在 TypeScript 里手写一个 CrewAI 桥接类（转发任务、解析 NDJSON）。桥接类会随着 CrewAI 版本变化频繁返工。正确做法是让 Python 服务直接暴露一个简单的 HTTP 端点，TS 只做 fetch + 透传。
 
 ---
 
-## 4. AutoGen 集成指南
+## 4. AutoGen
 
-### 4.1 核心思路：ConversableAgent 包装 + 条件终止
+**成熟用法**：AutoGen 的核心是 `ConversableAgent` 之间的对话与条件终止，适合"代码生成 + 测试"闭环。官方 Python 包直接使用：
 
-AutoGen 的特点是"对话终止条件"——Agent 在对话中自主判断是否完成。这适合"代码生成+测试"闭环：生成 Agent 写代码，测试 Agent 跑测试，失败了自动重来。
+```python
+# AutoGen 官方用法（Python）：ConversableAgent + 终止条件
+from autogen import ConversableAgent
 
-🔗 **工程逻辑**：AutoGen 不适合的场景是"用户参与的交互对话"——它是为"两个机器之间自动化协作"设计的。如果你做的是面向用户的聊天 Agent，AutoGen 的工具调用触发机制（需要另一个 Agent 或用户 proxy 发消息）会让你多写很多桥接代码。正确的做法是仅在本项目的"代码生成"类 skill 内部使用 AutoGen 作为子引擎。
-
-### 4.2 桥接实现
-
-```typescript
-// packages/core/src/frameworks/autogen-bridge.ts
-
-import { ConversableAgent, AgentRuntime } from 'autogen-agentchat';
-import { AbstractAgent } from '../agent/abstract-agent';
-import { ToolRegistry } from '../tools/tool-registry';
-import { ChatCompletionClient } from './autogen-openai-client';
-
-/**
- * 将本项目的 LLMClient 适配为 AutoGen 的 ChatCompletionClient。
- *
- * AutoGen 内部需要：
- * - create(messages, tools?) → { content, tool_calls? }
- * - create_stream(messages, tools?) → AsyncIterator of { content, tool_calls? }
- *
- * 关键：本项目 LLM 返回的 tool_calls 格式可能与 AutoGen 期望的不同，
- * 需要做格式转换。
- */
-export function wrapLLMForAutoGen(llmClient: {
-  create: (params: {
-    messages: Array<{ role: string; content: string }>;
-    tools?: Array<{ type: 'function'; function: { name: string; description: string; parameters: object } }>;
-  }) => Promise<{
-    choices: [{ message: { content: string; tool_calls?: Array<{ function: { name: string; arguments: string } }> } }];
-  }>;
-  stream: (params: {
-    messages: Array<{ role: string; content: string }>;
-    tools?: Array<{ type: 'function'; function: { name: string; description: string; parameters: object } }>;
-  }) => AsyncGenerator<{ choices: [{ delta: { content?: string; tool_calls?: Array<{ function: { name: string; arguments: string } }> } }] }>;
-}) {
-  return {
-    /**
-     * AutoGen 单次调用：把 result.choices[0].message 映射到 AutoGen 期望格式
-     * 🔑 tool_calls 从 function calling 结果透传给 AutoGen 用于自动执行
-     */
-    async create(params: {
-      messages: Array<{ role: string; content: string }>;
-      tools?: Array<{ type: 'function'; function: { name: string; description: string; parameters: object } }>;
-    }) {
-      const result = await llmClient.create(params);
-      const msg = result.choices[0].message;
-
-      // 转换 tool_calls 格式：从 OpenAI 风格 → AutoGen 内部格式
-      const toolCalls = msg.tool_calls?.map(tc => ({
-        id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        type: 'function' as const,
-        function: {
-          name: tc.function.name,
-          arguments: tc.function.arguments,
-        },
-      }));
-
-      return {
-        content: msg.content,
-        tool_calls: toolCalls,
-      };
-    },
-
-    /**
-     * AutoGen 流式调用：逐 chunk 累积内容 + 累积 tool_calls
-     * 🔑 需要在流结束时把完整的 tool_calls 合并到最终 chunk
-     */
-    async *create_stream(params: {
-      messages: Array<{ role: string; content: string }>;
-      tools?: Array<{ type: 'function'; function: { name: string; description: string; parameters: object } }>;
-    }) {
-      let fullContent = '';
-      const accumulatedToolCalls: Array<{ id?: string; type: string; function: { name: string; arguments: string } }> = [];
-
-      for await (const chunk of llmClient.stream(params)) {
-        const delta = chunk.choices[0].delta;
-
-        // 累积文本内容
-        if (delta.content) {
-          fullContent += delta.content;
-          yield { content: delta.content };
-        }
-
-        // 累积 tool_calls（流式分片可能不完整，需拼接 arguments）
-        if (delta.tool_calls) {
-          for (const tc of delta.tool_calls) {
-            const existing = accumulatedToolCalls.find(e => e.function.name === tc.function.name);
-            if (existing) {
-              existing.function.arguments += tc.function.arguments;
-            } else {
-              accumulatedToolCalls.push({
-                id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-                type: 'function',
-                function: { name: tc.function.name, arguments: tc.function.arguments },
-              });
-            }
-          }
-        }
-      }
-
-      // 流结束时输出合并后的 tool_calls
-      if (accumulatedToolCalls.length > 0) {
-        yield { content: fullContent, tool_calls: accumulatedToolCalls };
-      }
-    },
-
-    model: 'agentcore-llm',
-    pricing: { prompt_price_per_1m: 0, completion_price_per_1m: 0 },
-    config_list: [{
-      model: 'agentcore-llm',
-      api_type: 'openai',
-    }],
-  };
-}
-
-/**
- * 创建代码审查双人组（AutoGen 最经典的 use case）。
- *
- * 使用条件终止而非无限对话，防止死循环。
- */
-export function createCodeReviewPair(
-  llmClient: ReturnType<typeof wrapLLMForAutoGen>,
-  toolRegistry: ToolRegistry,
-) {
-  // 🔑 AutoGen v0.2+ API：ConversableAgent 构造参数需使用 config_list 正确格式
-  const coder = new ConversableAgent({
-    name: 'coder',
-    system_message: `You are a Python expert. Write code to solve the problem.
-      When the code is correct and all tests pass, reply with "TERMINATE".`,
-    llm_config: {
-      config_list: [{ model: 'agentcore-llm', api_key: 'placeholder' }],
-      ...llmClient,
-    },
-    is_termination_msg: (msg: { content?: string }) => msg.content?.includes('TERMINATE') ?? false,
-    human_input_mode: 'NEVER',
-  });
-
-  const tester = new ConversableAgent({
-    name: 'tester',
-    system_message: `You run tests on the provided code. If tests fail, send back
-      the error with instructions to fix. Never say TERMINATE.`,
-    llm_config: {
-      config_list: [{ model: 'agentcore-llm', api_key: 'placeholder' }],
-      ...llmClient,
-    },
-    code_execution_config: { use_docker: false, timeout: 30 },
-    human_input_mode: 'NEVER',
-  });
-
-  return { coder, tester };
-}
+coder = ConversableAgent(
+    name="coder",
+    system_message="你是 Python 专家。测试通过后回复 TERMINATE。",
+    llm_config={"config_list": [{"model": "gpt-4o"}]},
+    is_termination_msg=lambda msg: "TERMINATE" in (msg.get("content") or ""),
+    human_input_mode="NEVER",
+)
 ```
 
-### 4.3 何时该用 / 不该用 AutoGen
+🔗 **工程逻辑**：AutoGen 不适合面向用户的聊天 Agent——它是为"两个机器之间自动化协作"设计的。只在本项目的"代码生成"类 skill 内部使用 AutoGen 作为子引擎，用户对话仍走 01 的 `useChat`。
 
-```
-✅ 适合用 AutoGen：
-├── 代码生成+测试闭环（Coders + Tester + Verifier 三角闭环）
-├── 多 Agent 辩论/验证（生成一个答案，再让另一个挑战）
-├── 自动科研实验（设计实验→跑实验→分析结果→迭代）
-└── 已有 AutoGen 经验 + 团队熟悉它的模式
-
-❌ 不适合用 AutoGen：
-├── 面向用户的聊天 Agent（AutoGen 不擅长单 Agent 持续对话）
-├── 需要精细控制 MemoryManager 的场景（AutoGen 的记忆很粗粒度）
-├── 需要调用复杂 MCP 工具链的任务（AutoGen 的工具注册很原始）
-└── 前端 SSE 流式 AutoGen 没有原生支持，需要自己做 EventSource 桥接
-```
-
-### 4.4 群聊模式性能问题
-
-AutoGen 的 `GroupChat` 模式在 4+ 个 Agent 时性能急剧下降：
-- 每轮需要所有 Agent 选择下一个发话者（用 LLM 决定，每次都是 API 调用）
-- 默认无并发——N 个 Agent 的对话是 O(N^2) 消息复杂度
-- 30 分钟对话可能产生上百次 LLM 调用，token 消耗巨大
-
-**解法**：对 4+ Agent 群聊，不用 AutoGen GroupChat，改用本项目的 Supervisor 模式（已在 05-multi-agent.md 中有实现），只在关键校验环节引入 AutoGen 的双 Agent 审查对。
+🤖 **AI 常见错误**：用 AutoGen 的 `GroupChat` 做 4+ Agent 群聊。每轮所有 Agent 都要用 LLM 选下一个发言者，消息复杂度 O(N²)，token 消耗巨大。4+ Agent 场景改用本项目 05 的 Supervisor 模式，只在关键校验环节引入 AutoGen 双 Agent 对。
 
 ---
 
-## 5. CAMEL 集成指南
+## 5. CAMEL
 
-### 5.1 核心思路：角色扮演对话桥接
+**成熟用法**：CAMEL 以角色扮演对话研究闻名，官方 `camel` Python 包直接使用：
 
-CAMEL 的核心模式是两个 Role（如 AssistantRole + UserRole）对话涌现智能。CAMEL 是 Python 系的，TypeScript 项目通过 HTTP 调用 Python CAMEL 服务。
+```python
+# CAMEL 官方用法（Python）：ChatAgent
+from camel.agents import ChatAgent
 
-```typescript
-// packages/core/src/frameworks/camel-bridge.ts
-
-/**
- * CAMEL ApiClient —— 通过 HTTP 调用 Python CAMEL 服务。
- * CAMEL 的多角色对话编排由 Python 端实现，TS 侧只负责传角色配置、收流式结果。
- */
-export class CAMELApiClient {
-  constructor(private baseUrl: string) {}
-
-  async *runRolePlaying(params: {
-    taskPrompt: string;
-    assistantRole: { name: string; roleDescription: string; withTaskSpecsConverted?: boolean };
-    userRole: { name: string; roleDescription: string; withTaskSpecsConverted?: boolean };
-    withTaskSpecifier: boolean;
-    maxWords: number;
-  }): AsyncGenerator<string> {
-    const res = await fetch(`${this.baseUrl}/api/camel/role-play`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
-    });
-
-    if (!res.ok) throw new Error(`CAMEL service error: ${res.status}`);
-
-    const reader = res.body?.getReader();
-    if (!reader) throw new Error('No response body');
-
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        const parsed = JSON.parse(line);
-        yield `[${parsed.role}] ${parsed.content}`;
-      }
-    }
-  }
-}
+agent = ChatAgent(system_message="你是一个有帮助的助手。")
+response = agent.step("解释什么是多模态 Agent")
+print(response.msg.content)
 ```
+
+**适用场景**：对话数据生成、角色扮演研究、多 Agent 行为分析。TS 项目如果只是调用，同样用 HTTP 访问 Python 服务，不写桥接。
 
 ---
 
-## 6. MetaGPT 集成指南
+## 6. MetaGPT
 
-### 6.1 核心思路：SOP 多角色流水线桥接
+**成熟用法**：MetaGPT 把"软件公司"流水线（需求 → 设计 → 编码 → 测试）封装成高层 API，官方 Python 包直接使用：
 
-MetaGPT 用 Software Company 模式——多个 Role 按 SOP 串行/协作（需求分析 → 技术方案 → 编码 → 测试）。Python-only，TS 侧通过 HTTP 交互。
+```python
+# MetaGPT 官方用法（Python）：高层 SOP 流水线
+from metagpt.software_company import generate_repo
 
-```typescript
-// packages/core/src/frameworks/metagpt-bridge.ts
-
-/**
- * MetaGPTClient —— 通过 HTTP 调用 Python MetaGPT 服务。
- * MetaGPT 的多角色流水线编排由 Python 端实现，TS 侧传需求文本、收各阶段产物。
- */
-export class MetaGPTClient {
-  constructor(private baseUrl: string) {}
-
-  async *runSoftwareCompany(
-    requirements: string,
-    opts: {
-      maxStepsPerRole?: number;
-      investingGroupSize?: number;
-      namespace?: string;
-    // eslint-disable-next-line @typescript-eslint/no-inferrable-types
-    } = { maxStepsPerRole: 8, investingGroupSize: 5, namespace: 'default' }
-  ): AsyncGenerator<{ step: string; role: string; content: string }> {
-    const res = await fetch(`${this.baseUrl}/api/metagpt/run`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ requirements, ...opts }),
-    });
-
-    if (!res.ok) throw new Error(`MetaGPT service error: ${res.status}`);
-
-    const reader = res.body?.getReader();
-    if (!reader) throw new Error('No response body');
-
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        yield JSON.parse(line);
-      }
-    }
-  }
-}
+generate_repo(idea="构建一个 CLI 待办事项工具", investment=2.0)
 ```
+
+**适用场景**：软件工程流程自动化。注意 MetaGPT 的 API 在不同版本间变化较大，**锁定版本**再使用（见避坑汇总）。
 
 ---
 
 ## 7. 实战混用策略
 
-### 7.1 架构总览
+### 7.1 架构原则
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    本项目（AgentCore）                         │
-│                                                              │
-│  ┌─────────────┐  ┌──────────────┐  ┌──────────────────┐    │
-│  │ MemoryManager│  │ ToolRegistry  │  │ Skills System    │    │
-│  └──────┬──────┘  └──────┬───────┘  └────────┬─────────┘    │
-│         │                │                    │              │
-│         └────────────────┼────────────────────┘              │
-│                          │                                   │
-│                   ┌──────┴──────┐                            │
-│                   │ AbstractAgent│                            │
-│                   └──────┬──────┘                            │
-│                          │                                   │
-│         ┌────────────────┼────────────────┐                  │
-│         ▼                ▼                ▼                  │
-│  ┌─────────────┐  ┌──────────────┐  ┌─────────────┐         │
-│  │LangGraph    │  │  CrewAI       │  │ AutoGen      │         │
-│  │StateGraph   │  │  Crew         │  │ GroupChat    │         │
-│  │(持久化/恢复) │  │  (任务分配)   │  │ (代码审查)   │         │
-│  └─────────────┘  └──────────────┘  └─────────────┘         │
-│                                                              │
-│         每个框架节点内都是一个 AbstractAgent 实例              │
-└─────────────────────────────────────────────────────────────┘
-```
+本项目（AgentCore）是主体，框架是工具。混用不是"把所有框架缝在一起"，而是**按痛点逐个引入**：
 
-### 7.2 具体编排示例
+1. **Stage 1**：01 的 `streamText` + `tools` 搞定 90% 场景。
+2. **Stage 2**：需要持久化 / 断点恢复时，引入 LangGraph `createReactAgent` + checkpointer。
+3. **Stage 3**：需要角色化团队协作时，引入 CrewAI（独立 Python 服务）。
+4. **Stage 4**：仅在"代码生成 + 测试"闭环中引入 AutoGen 双 Agent 对。
 
-```typescript
-// packages/core/src/frameworks/orchestrator.ts
+每一步收益明确、风险可控。一步到位的"混用"会变成维护地狱。
 
-import { buildAgentGraph, streamAgentGraph } from './langgraph-bridge';
-import { createResearchCrew } from './crewai-bridge';
-import { createCodeReviewPair } from './autogen-bridge';
-import { AbstractAgent } from '../agent/abstract-agent';
-import { ToolRegistry } from '../tools/tool-registry';
-import { MemoryManager } from '../memory/memory-manager';
-import type { LLMClient } from '../llm/types';
+### 7.2 混用关键约束
 
-/**
- * 实战调度器：根据任务类型选择编排框架。
- *
- * 核心原则：本项目提供 Memory、Tool、Skills 基础设施，
- * 框架只负责"编排基础设施之上的任务流程"。
- */
-export class HybridOrchestrator {
-  private langGraphInstance;
-  private agents: Map<string, AbstractAgent>;
-
-  constructor(
-    private toolRegistry: ToolRegistry,
-    private memory: MemoryManager,
-    private llmClient: LLMClient,
-    options: { checkpointer?: unknown } = {},
-  ) {
-    this.agents = new Map();
-
-    // 默认通用 Agent（不绑 LangGraph，直接 SSE 服务用户）
-    this.agents.set('general', new AbstractAgent({
-      llmClient: this.llmClient,
-      toolRegistry,
-      memoryManager: memory,
-      systemPrompt: '你是一个通用助手。请以有帮助、安全的方式回答用户问题。',
-    }));
-
-    // 🔑 每个角色创建独立的 AbstractAgent 实例，各自不同 system prompt
-    const researchAgent = new AbstractAgent({
-      llmClient: this.llmClient,
-      toolRegistry,
-      memoryManager: memory,
-      systemPrompt: '你是资深研究分析师。擅长多角度收集信息、交叉验证、形成有依据的结论。',
-    });
-    this.agents.set('researcher', researchAgent);
-
-    const writerAgent = new AbstractAgent({
-      llmClient: this.llmClient,
-      toolRegistry,
-      memoryManager: memory,
-      systemPrompt: '你是技术写作专家。擅长将复杂研究转化为结构清晰、易读的文档。',
-    });
-    this.agents.set('writer', writerAgent);
-
-    const reviewerAgent = new AbstractAgent({
-      llmClient: this.llmClient,
-      toolRegistry,
-      memoryManager: memory,
-      systemPrompt: '你是严格的质量审查员。检查事实准确性、逻辑完整性，发现问题直接指出。',
-    });
-    this.agents.set('reviewer', reviewerAgent);
-
-    if (options.checkpointer) {
-      this.langGraphInstance = buildAgentGraph(researchAgent, options.checkpointer as any);
-    }
-  }
-
-  /**
-   * 路由用户请求到合适的执行路径。
-   */
-  async *handle(input: string, sessionId: string): AsyncGenerator<{ type: string; data: unknown }> {
-    // 1. 简单对话 → 直接用 AbstractAgent（不引入框架开销）
-    // 2. "research X" → LangGraph 编排（支持 checkpoint 恢复）
-    // 3. "review code X" → AutoGen 双人审查
-    // 4. "write report about X" → CrewAI 协调
-
-    const intent = await this.classifyIntent(input);
-
-    switch (intent) {
-      case 'research': {
-        if (!this.langGraphInstance) {
-          throw new Error('LangGraph checkpointer not configured');
-        }
-        yield* streamAgentGraph(this.langGraphInstance, input, sessionId);
-        break;
-      }
-
-      case 'code_review': {
-        yield { type: 'agent_event', data: { content: 'Starting code review...' } };
-        const pair = createCodeReviewPair(wrapLLMForAutoGen(/* llmClient */), this.toolRegistry);
-        // AutoGen 执行逻辑...
-        yield { type: 'agent_event', data: { content: 'Code review complete' } };
-        break;
-      }
-
-      case 'writing': {
-        const crew = createResearchCrew({
-          researcher: this.agents.get('researcher')!,
-          writer: this.agents.get('writer')!,
-          reviewer: this.agents.get('reviewer')!,
-          toolRegistry: this.toolRegistry,
-          memory: this.memory,
-        });
-        for await (const chunk of crew.run(input)) {
-          yield { type: 'agent_event', data: { content: chunk } };
-        }
-        break;
-      }
-
-      default: {
-        // 默认走 AbstractAgent 直接对话——零框架开销
-        const agent = this.agents.get('general')!;
-        for await (const event of agent.run(input, { sessionId })) {
-          yield event;
-        }
-      }
-    }
-  }
-
-  private async classifyIntent(input: string): Promise<string> {
-    const lower = input.toLowerCase();
-    if (lower.startsWith('research') || lower.startsWith('analyze')) return 'research';
-    if (lower.includes('code review') || lower.includes('review pr')) return 'code_review';
-    if (lower.startsWith('write report') || lower.startsWith('draft')) return 'writing';
-    return 'general';
-  }
-}
-```
-
-### 7.3 混用关键约束
-
-1. **持久化格式统一**：LangGraph 用了 checkpoint，本项目自己也有状态快照。混用时只选一种——推荐用 LangGraph 的 checkpoint 处理"复杂工作流"，本项目的 auto-save 处理"普通对话"。不要两套同时跑。
-
-2. **工具调用链路追踪**：混用后 tool call 的 trace 横跨多个框架。工具调用的日志必须在 ToolRegistry 层统一注入，不能依赖各框架自己的 trace —— 否则你看到的 trace 会断成几截。
-
-3. **Token 预算分摊**：多框架混用时，一个对话可能经过 2-3 个 LLM 调用链。AbstractAgent 的 token budget（128K）要按路由阶段分摊：research 40%，writing 30%，review 20%，buffer 10%。
+1. **持久化格式统一**：LangGraph 用 checkpoint，本项目也有状态快照。混用时只选一种——推荐用 LangGraph 的 checkpoint 处理"复杂工作流"，本项目的 auto-save 处理"普通对话"。不要两套同时跑。
+2. **可观测性统一**：混用后 tool call 的 trace 横跨多个框架。用 Langfuse（08）统一注入 `trace_id`，不依赖各框架自己的 trace——否则 trace 会断成几截。
+3. **Token 预算分摊**：多框架混用时，一个对话可能经过 2-3 条 LLM 调用链。按路由阶段分摊预算：research 40%，writing 30%，review 20%，buffer 10%。
 
 ---
 
@@ -972,180 +203,38 @@ export class HybridOrchestrator {
 
 | 从 → 到 | 代码改动量 | 性能影响 | 维护收益 | 风险 |
 |---------|-----------|---------|---------|------|
-| 纯手写 → LangGraph | 中等（~500 行桥接） | +5-15% 延迟（图层开销） | +持久化, +LangSmith trace, +生态插件 | API 版本不兼容（0.2 → 0.3 大改动） |
-| 纯手写 → CrewAI | 少（~300 行包装） | +10-20% 延迟（CrewAI 中间的编排层） | +快速原型, +角色模板 | 底层控制力弱，生产场景缩手缩脚 |
-| 纯手写 → AutoGen | 中等（~400 行） | +15-30% 延迟（多 Agent 多轮通信） | +代码生成闭环, +测试驱动开发 | 面向用户对话场景不匹配 |
-| 纯手写 → 混用 | 大（~1200 行编排层） | +20-40% 延迟（多框架序列调用） | +各取所长 | 调试复杂度翻倍，trace 断裂风险 |
+| 纯手写 → LangGraph | 中等（迁移 `streamText` 到 `createReactAgent`） | +5-15% 延迟（图层开销） | +持久化, +LangSmith trace, +生态插件 | API 版本不兼容（0.2 → 0.3 大改动） |
+| 纯手写 → CrewAI | 少（独立 Python 服务） | +10-20% 延迟（跨语言 HTTP） | +快速原型, +角色模板 | 底层控制力弱，生产场景缩手缩脚 |
+| 纯手写 → AutoGen | 中等（Python 子引擎） | +15-30% 延迟（多 Agent 多轮通信） | +代码生成闭环 | 面向用户对话场景不匹配 |
+| 纯手写 → 混用 | 大（编排层） | +20-40% 延迟（多框架序列调用） | +各取所长 | 调试复杂度翻倍，trace 断裂风险 |
 | LangGraph → 纯手写 | 回归工作量大 | -10% 延迟（去掉了图层） | 完全控制，无版本依赖 | 失去 checkpoint 恢复能力 |
 
-🔗 **工程逻辑**："混用"不是一次性全上。正确演进路径是：
-1. Stage 1：本项目 AbstractAgent 搞定 90% 场景
-2. Stage 2：引入 LangGraph 仅为了 checkpoint（解决 fault-recovery）
-3. Stage 3：对特定任务引入 CrewAI 协调
-4. Stage 4：仅在代码审查场景引入 AutoGen 双人组
-
-每一步收益明确、风险可控。一步到位的"混用"会变成维护地狱。
-
 ---
 
-## 9. 前端：Framework 适配器面板
-
-🔗 **工程逻辑**：让用户看到当前使用的框架有几个价值：（1）设置合理期待——知道是 LangGraph 还是直接回复，回复延迟预期不同；（2）调试时快速定位问题出在哪个框架层级；（3）在"研究模式"和"普通模式"间切换。
-
-```tsx
-// apps/web/src/components/framework/framework-panel.tsx
-
-'use client';
-
-import { useState, useEffect } from 'react';
-
-interface FrameworkAdapter {
-  id: string;
-  name: string;
-  status: 'active' | 'available' | 'disabled';
-  icon: string;
-  description: string;
-  switchCost: 'low' | 'medium' | 'high';
-}
-
-const FRAMEWORKS: FrameworkAdapter[] = [
-  {
-    id: 'native',
-    name: 'Native Agent',
-    status: 'active',
-    icon: '⚡',
-    description: '直接通过 AbstractAgent 响应，零框架开销',
-    switchCost: 'low',
-  },
-  {
-    id: 'langgraph',
-    name: 'LangGraph',
-    status: 'available',
-    icon: '🔀',
-    description: '图编排 + 持久化 checkpoint，适合复杂工作流',
-    switchCost: 'medium',
-  },
-  {
-    id: 'crewai',
-    name: 'CrewAI',
-    status: 'available',
-    icon: '👥',
-    description: '角色化团队协调，适合研究报告生成',
-    switchCost: 'medium',
-  },
-  {
-    id: 'autogen',
-    name: 'AutoGen',
-    status: 'disabled',
-    icon: '🤖',
-    description: '双 Agent 代码审查，仅支持代码类任务',
-    switchCost: 'high',
-  },
-];
-
-export function FrameworkPanel() {
-  const [active, setActive] = useState('native');
-  const [showDetail, setShowDetail] = useState<string | null>(null);
-
-  const switchCostColors = {
-    low: 'text-green-400',
-    medium: 'text-yellow-400',
-    high: 'text-red-400',
-  };
-
-  return (
-    <div className="bg-surface rounded-lg border border-border p-4 space-y-3">
-      <h3 className="text-text font-medium text-sm">框架适配器</h3>
-
-      <div className="space-y-1">
-        {FRAMEWORKS.map((fw) => (
-          <div
-            key={fw.id}
-            className={`flex items-center justify-between px-3 py-2 rounded-md transition-colors
-              ${fw.status === 'active' ? 'bg-primary/10 border border-primary/30' : 'hover:bg-surface/60'}
-              ${fw.status === 'disabled' ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}
-            `}
-            onClick={() => {
-              if (fw.status !== 'disabled') {
-                setActive(fw.id);
-                setShowDetail(showDetail === fw.id ? null : fw.id);
-              }
-            }}
-          >
-            <div className="flex items-center gap-2">
-              <span className="text-base">{fw.icon}</span>
-              <div>
-                <div className="text-sm text-text font-medium">{fw.name}</div>
-                <div className="text-xs text-muted">{fw.description}</div>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-3">
-              {fw.status === 'active' && (
-                <span className="text-xs bg-primary/20 text-primary px-2 py-0.5 rounded">
-                  运行中
-                </span>
-              )}
-              <span className={`text-xs ${switchCostColors[fw.switchCost]}`}>
-                切换成本: {fw.switchCost === 'low' ? '低' : fw.switchCost === 'medium' ? '中' : '高'}
-              </span>
-              <div className={`w-2 h-2 rounded-full ${
-                fw.status === 'active' ? 'bg-green-400' :
-                fw.status === 'available' ? 'bg-blue-400' : 'bg-gray-400'
-              }`} />
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* 切换提示 */}
-      {showDetail && showDetail !== active && (
-        <div className="mt-3 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-md text-xs text-yellow-300">
-          ⚠️ 切换到 {FRAMEWORKS.find(f => f.id === showDetail)?.name} 后：
-          <ul className="list-disc ml-4 mt-1 space-y-0.5">
-            <li>当前会话将被 checkpoint 后重新创建</li>
-            <li>工具调用链路将通过新框架编排</li>
-            <li>预计额外增加 5-15% 延迟</li>
-          </ul>
-        </div>
-      )}
-    </div>
-  );
-}
-```
-
----
-
-## 10. 避坑汇总
+## 9. 避坑汇总
 
 | 问题 | 原因 | 解法 |
 |------|------|------|
-| LangGraph 0.2 → 0.3 升级后代码全炸 | API 重构：`GraphState` → `StateGraph`，`addNode()` 参数格式变了 | 锁定版本 `"@langchain/langgraph": "0.2.45"` 在 package.json 里，等 0.3 稳定后再迁移 |
-| 混用框架导致 trace 断裂 | 每个框架有自己的 trace 体系（LangSmith/CrewAI log/AutoGen verbose），互不连通 | 在 ToolRegistry 层统一注入 trace ID，跨框架透传 |
-| 框架抽象泄漏——LangGraph 图状态泄漏到 Agent 内部 | 强依赖 Annotation.Root 的 State 类型定义 | 把 LangGraph 状态作为参数传入 AbstractAgent.run()，不要让它成为模块级全局变量 |
-| CrewAI Agent 调用 AbstractAgent 时出现两个 Memory 系统 | CrewAI 有自己的 Memory（short/long/external）和 AbstractAgent 的 MemoryManager | 在 CrewAI Agent 里设置 `memory=False`，让记忆完全走 AbstractAgent |
-| AutoGen 的 code_execution_config 依赖 Docker，和本项目的 sandbox 冲突 | 两边都想拉起 Docker 容器 | 在 AutoGen 里设 `use_docker: false`，代码执行走本项目的 ToolRegistry 已有的 `execute_code` 工具 |
-| 前端显示 LangGraph trace 但用户不需要看到图编排放大镜 | 把内部调试信息暴露到生产 UI | trace 信息只在`/admin/dev-tools` 页面展示，普通用户只能看到"framework: LangGraph"标识 |
-| 每个框架都拉了不同版本的 LangChain | LangGraph 和 CrewAI 都依赖 LangChain 但版本要求不同 | 用 `pnpm.overrides` 统一 LangChain 版本，或直接避免同时安装 |
-| 框架升级导致工具格式不兼容 | LangGraph 工具定义是 `ToolNode`，AutoGen 是 `function_map`，CrewAI 是自定义 Tool 类 | 桥接层做格式转换，不要在各处散落格式处理逻辑 |
+| LangGraph 0.2 → 0.3 升级后代码全炸 | API 重构：`GraphState` → `StateGraph`，`addNode()` 参数格式变了 | 锁定版本 `"@langchain/langgraph": "0.2.45"` 在 package.json，等 0.3 稳定后再迁移 |
+| 混用框架导致 trace 断裂 | 每个框架有自己的 trace 体系（LangSmith/CrewAI log/AutoGen verbose），互不连通 | 在 ToolRegistry / Langfuse 层统一注入 trace ID，跨框架透传 |
+| CrewAI Agent 出现两个 Memory 系统 | CrewAI 有自己的 Memory（short/long/external），本项目也有 `MemoryManager` | 在 CrewAI Agent 里设置 `memory=False`，记忆完全走本项目 |
+| AutoGen 的 code_execution_config 依赖 Docker，和沙箱冲突 | 两边都想拉起 Docker 容器 | 在 AutoGen 里设 `use_docker: false`，代码执行走本项目已有的 `execute_code` 工具 |
+| 每个框架都拉了不同版本的 LangChain | LangGraph 和 CrewAI 都依赖 LangChain 但版本要求不同 | 用 `pnpm.overrides` 统一 LangChain 版本，或避免同时安装 |
+| 框架升级导致工具格式不兼容 | LangGraph 工具是 ToolNode，AutoGen 是 function_map，CrewAI 是自定义 Tool 类 | 用官方转换工具（`convertToLangChainTools` / crewai-tools），不散落格式处理逻辑 |
 
 ---
 
-## 11. AI 避坑追加（AST 可检）
+## 10. 本层验收清单
 
-> 🤖 **AI 常见错误**：
->
-> 3. **混用框架时 token 预算未分摊** — 当一个对话路由经过 LangGraph（research 阶段）和手写 AbstractAgent（general 阶段）时，两边的 `system prompt` 各自占 token，总 token 超出 context window 后 LLM 静默截断 system prompt 的工具描述层。**检查方式**：`AbstractAgent.run()` 必须在每次 LLM 调用前断言 `estimateTokens(systemPrompt) + estimateTokens(messages) < model.maxContext * 0.8`；混用模式下每个框架的 token 配额由 `TokenBudgetAllocator` 显式分配，禁止各框架自行估算。
+> 完成本层后，用以下步骤验证：
 
-## 12. 本层验收清单
-
-- [ ] 类型检查：在仓库根目录运行 `pnpm typecheck`，确认 `packages/core/src/framework/*.ts` 桥接层全部通过；`StateGraph`/`Annotation.Root` 等框架类型只出现在对应适配器模块内。
-- [ ] 桥接核心行为：运行 `pnpm vitest run framework/bridge`，断言同一份 `AbstractAgent` 在 LangGraph、CrewAI、AutoGen 三种桥接下执行同一工具任务，结果一致且消息历史无重复。
-- [ ] 版本锁定：检查 `package.json` 中 `@langchain/langgraph` 锁在 `0.2.45`，运行 `pnpm why @langchain/langgraph` 确认无两个主版本并存；`pnpm.overrides` 已统一 LangChain 版本。
-- [ ] 边界场景：混用 LangGraph 与手写 Agent 时把总 token 推到 context 上限的 80%，断言 `TokenBudgetAllocator` 在第二次 LLM 调用前抛出显式预算错误，而不是静默截断 system prompt。
-- [ ] 安全回归：在 `ToolRegistry` 层注入跨框架 trace ID，断言 LangSmith/CrewAI log/AutoGen verbose 三类日志中的 `trace_id` 字段完全一致。
-- [ ] 性能回归：运行 `pnpm vitest run framework/perf`，断言每个桥接适配器的额外调用开销小于 5ms。
+- [ ] **选型确认**：在项目 README 或 ADR 中记录本层选型结论——哪个场景用哪个框架、为什么；没有引入的框架注明"暂不需要"。
+- [ ] **官方 API 示例**：`createReactAgent` 示例、CrewAI / AutoGen / CAMEL / MetaGPT 的 Python 示例分别在对应运行时中可运行，产出符合文档描述。
+- [ ] **类型检查**：如引入 LangGraph TS 包，运行 `pnpm typecheck`，确认 `createReactAgent` 相关代码全部通过；`references/` 下无自定义 LLM 类型与手写桥接层残留。
+- [ ] **版本锁定**：检查 `package.json` 中 `@langchain/langgraph` 锁在 `0.2.45`；`pnpm why @langchain/langgraph` 确认无两个主版本并存；`pnpm.overrides` 已统一 LangChain 版本。
+- [ ] **可观测性**：混用 LangGraph 与自研 Agent 时，Langfuse 中同一会话的 `trace_id` 字段在所有框架日志中一致。
+- [ ] **门禁回归**：运行 `node tools/check-skill.mjs`，本文件所有代码块通过语法解析，且包含 ≥3 条 🤖 标记与本层验收清单。
 
 ---
 
-*本节点属于 Layer 4 生态集成层。核心原则：本项目（AgentCore）是主体，框架是工具。不要为了"用上某个框架"而用，只有在框架解决的问题确实是你的痛点时才引入。混用的代价是调试复杂度指数级增长，所以演进路径应该是逐步叠加、而非一步到位。框架版本兼容性必须在锁定文件（package.json）里做好管控。*
+> **与后续节点的衔接**：本文件是纯选型文档——确定框架后，LangGraph 的接入由 05（Multi-Agent）与 21（Fault Recovery）落地，CrewAI/AutoGen 的服务化部署由 09（Deploy）处理，统一观测由 08（Eval & Observability）提供。所有示例中的 `llm` 类型仍遵循 00 契约；多框架场景不引入自定义 LLM 抽象，避免破坏跨层类型一致性。

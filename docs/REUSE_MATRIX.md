@@ -1,7 +1,8 @@
 # 成熟替代映射表 / REUSE MATRIX
 
 > 本表是本 Skill 的**核心承诺**：每一层都用成熟方案，不手写轮子。
-> **2026 最新技术现状见 [docs/TECH_LANDSCAPE.md](TECH_LANDSCAPE.md)**（Agent 集群/A2A/MCP 无状态化/记忆工具/混合检索等，含大厂采用证据与淘汰清单）。写代码前先查这两份文件。
+> **2026 最新技术现状见 [docs/TECH_LANDSCAPE.md](TECH_LANDSCAPE.md)**（Agent 集群/A2A/MCP 无状态化/记忆工具/混合检索等，含大厂采用证据与淘汰清单）。
+> **对标与二次开发见 [docs/BENCHMARK_OPENSOURCE.md](BENCHMARK_OPENSOURCE.md)**（想做 X → 参考项目 Y / 直接 fork Z，含许可证红绿灯）。写代码前先查这三份文件。
 > 任何 reference 中出现"自己实现某层基础设施"的代码，都应按下表替换为成熟库/成熟产品。
 > 唯一允许手写的，是**业务差异层**（产品独特卖点）与**胶水层**（把成熟库接进你的架构的少量集成代码），且必须在代码中标注 `[CUSTOM]`。
 

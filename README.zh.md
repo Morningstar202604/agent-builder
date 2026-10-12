@@ -24,6 +24,7 @@
 | 多 Agent | Supervisor+Worker · LangGraph 集成 · 框架对比（LangGraph/CrewAI/AutoGen） |
 | 安全 | Prompt Injection 防御 · Guardrails 校验 · 工具风险分类 |
 | 生产部署 | Docker + K8s · CI/CD · OpenTelemetry · Webhook · Playground UI |
+| 对标参考 | [技术生态现状](docs/TECH_LANDSCAPE.md) · [开源项目对标与二次开发](docs/BENCHMARK_OPENSOURCE.md) · [调研报告](docs/research/) |
 
 ## 快速开始
 

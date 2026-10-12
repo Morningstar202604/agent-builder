@@ -42,6 +42,8 @@ A router for building a complete AI Agent product. **Do not implement directly f
 
 ### 路径 A：直接使用开源项目（推荐先评估）
 
+> **对标与二次开发清单**：见 [docs/BENCHMARK_OPENSOURCE.md](docs/BENCHMARK_OPENSOURCE.md) —— 想做"类 ChatGPT 产品 / 企业知识库 / Agent 平台 / 桌面客户端 / 浏览器 Agent"分别参考哪个开源项目、哪些能直接 fork 二次开发（含许可证红绿灯）。
+
 下面按"可以直接部署使用的完整产品"和"可以集成的框架库"分类。先看看有没有现成的能满足需求；如果满足，**直接用，不要重造**。
 
 #### A1. 可以直接部署的完整产品 / Full-Stack Deployable Products

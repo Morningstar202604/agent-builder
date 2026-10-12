@@ -27,6 +27,7 @@ A complete reference for developers and AI Agents to **build enterprise-grade AI
 | Multi-Agent | Supervisor+Worker · LangGraph Integration · Framework Comparison |
 | Security | Prompt Injection Defense · Guardrails · Tool Risk Classification |
 | Production | Docker + K8s · CI/CD · OpenTelemetry · Webhooks · Playground UI |
+| 对标参考 | [技术生态现状](docs/TECH_LANDSCAPE.md) · [开源项目对标与二次开发](docs/BENCHMARK_OPENSOURCE.md) · [调研报告](docs/research/) |
 
 ## 快速开始 / Quick Start
 

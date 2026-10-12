@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-12
+
 ### Added
 - 验证门禁：新增 `tools/check-skill.mjs` 与 `package.json`（运行 `npm run check`）——解析全部 TypeScript 代码块、校验相对链接、声明路径布局与 SKILL.md 承诺（每文件 ≥3 条 🤖 避坑标记 + 验收清单章节），并接入 GitHub Actions CI（`.github/workflows/verify.yml`）。
 - 为 21 个 reference 补齐"本层验收清单"章节；为 11 个 reference 补齐 AI 避坑标记（均达到 ≥3 条）。
@@ -22,8 +24,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 检查器兼容片段代码块（class/namespace/async generator 包裹后再解析）；避坑标记检测改为统计 `🤖`（与 references 实际格式一致）；扩展允许的 monorepo 路径前缀。
 - 对齐 SKILL.md 声明的 monorepo 布局与 references 实际路径（新增 `server/`、`packages/mcp-servers`、`packages/web`）。
 - `.env.example` 密钥示例改为环境变量注入说明，避免硬编码占位密钥。
-
-## [Unreleased]
 
 ### Added（2026-10 扩写与调研）
 - 新增 `docs/TECH_LANDSCAPE.md`：2022-2026 成熟 Agent 技术清单（Agent 编排/集群、MCP 无状态规范、A2A、记忆与 RAG、可观测性/评估/安全、大厂生产实践、淘汰清单）。
@@ -68,4 +68,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - 无（首次发布）
 
+[1.0.1]: https://github.com/Morningstar202604/agent-builder/releases/tag/v1.0.1
 [1.0.0]: https://github.com/Morningstar202604/agent-builder/releases/tag/v1.0.0
